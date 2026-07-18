@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pmt_analysis"
+version = "0.1.0"
+description = "PMT test data analysis toolkit"
+readme = "README.md"
+requires-python = ">=3.8"
+authors = [
+  { name = "PMT Analysis Team" }
+]
+dependencies = []
+
+[project.scripts]
+pmt-analysis = "pmt_analysis.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
