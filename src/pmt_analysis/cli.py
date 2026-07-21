@@ -50,6 +50,18 @@ def build_parser() -> argparse.ArgumentParser:
         default=False,
         help="Write analysis results to database (default: off)",
     )
+    analyze_parser.add_argument(
+        "--github-user",
+        type=str,
+        default="",
+        help="GitHub username for database write authentication (required with --write-db)",
+    )
+    analyze_parser.add_argument(
+        "--github-token",
+        type=str,
+        default="",
+        help="GitHub classic token for database write authentication (required with --write-db)",
+    )
 
     return parser
 
@@ -77,6 +89,8 @@ def main() -> None:
                 data_root=args.data_root,
                 save_plots=save_plots,
                 write_db=args.write_db,
+                github_user=args.github_user,
+                github_token=args.github_token,
             )
         )
 

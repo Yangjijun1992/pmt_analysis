@@ -43,6 +43,8 @@ def analyze_runs(
     data_root: str = DEFAULT_TPC_DATA_ROOT,
     save_plots: bool = True,
     write_db: bool = False,
+    github_user: str = "",
+    github_token: str = "",
 ) -> int:
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -349,6 +351,8 @@ def analyze_runs(
                             dark_result=dcr_result,
                             gain_result=gain_result,
                             app_result=app_result,
+                            github_user=github_user,
+                            github_token=github_token,
                         )
                 except MappingError as e:
                     print(f"[run_id={ri.run_id}] Mapping error: {e}. Skipping DB write.")

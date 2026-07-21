@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 from pmt_analysis.analysis.app import AppAnalysisResult
 from pmt_analysis.analysis.dark_count import ChannelDarkCountResult, DarkCountResult
 from pmt_analysis.analysis.gain import GainAnalysisResult, GainFitResult
+from pmt_analysis.auth import verify_github_user
 from pmt_analysis.db.mapping import (
     ChannelNotMappedError,
     ChannelMapping,
@@ -141,7 +142,16 @@ def write_analysis_results(
     dark_result: Optional[DarkCountResult] = None,
     gain_result: Optional[GainAnalysisResult] = None,
     app_result: Optional[AppAnalysisResult] = None,
+    github_user: Optional[str] = None,
+    github_token: Optional[str] = None,
 ) -> int:
+    if github_user is None or github_token is None:
+        raise DatabaseWriteError(
+            "GitHub authentication required for database writes. "
+            "Provide --github-user and --github-token."
+        )
+
+    verify_github_user(github_user, github_token)
     records = build_pmt_records(
         mapping=mapping,
         dark_result=dark_result,
