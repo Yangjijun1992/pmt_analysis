@@ -23,6 +23,7 @@ from pmt_analysis.models import RunInfo
 from pmt_analysis.plotting.validation import (
     plot_area_histogram,
     plot_dark_count_baseline_2d,
+    plot_dark_count_noise_diagnostics_2d,
     plot_dark_count_validation,
     plot_filtered_waveform_overlay,
     plot_spe_gain_validation,
@@ -310,6 +311,15 @@ def analyze_runs(
                     if baseline_2d_plot:
                         run_plot_paths.append(baseline_2d_plot)
                         print(f"[run_id={ri.run_id}]   baseline_2d plot: {baseline_2d_plot}")
+
+                    noise_2d_plot = plot_dark_count_noise_diagnostics_2d(
+                        result=dcr_result,
+                        output_dir=output_path,
+                        run_id=ri.run_id,
+                    )
+                    if noise_2d_plot:
+                        run_plot_paths.append(noise_2d_plot)
+                        print(f"[run_id={ri.run_id}]   noise_diag_2d plot: {noise_2d_plot}")
 
                 if gain_result is not None:
                     hist_dict: Dict[int, Tuple[np.ndarray, np.ndarray]] = {}

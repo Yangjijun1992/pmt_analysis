@@ -708,3 +708,208 @@ def plot_filtered_waveform_overlay(
     except Exception as e:
         logger.warning("Failed to generate filtered waveform overlay plot: %s", e)
         return None
+
+
+def plot_dark_count_noise_diagnostics_2d(
+    result: DarkCountResult,
+    output_dir: str | Path,
+    run_id: str | int,
+    n_bins: int = 80,
+    sample_size: int = 8000,
+) -> Optional[str]:
+    """Generate per-channel 2D noise diagnostic plots.
+
+    For each channel, produces one canvas with three 2D histogram pairs
+    (dark in left column, noise in right column) showing:
+
+      Row 1: asymmetry vs edge_sharpness
+      Row 2: asymmetry vs RMS
+      Row 3: edge_sharpness vs RMS
+
+    Each pair uses the same colormap scale for fair visual comparison.
+    Dark count = blue colormap, noise = red colormap.
+    Noisy channels get a yellow border.
+
+    Args:
+        result: DarkCountResult from analyze_dark_count()
+        output_dir: Directory to save the plot
+        run_id: Run ID for filename and title
+        n_bins: Number of bins for 2D histograms
+        sample_size: Max points to downsample per channel (default 8000)
+
+    Returns:
+        Saved file path, or None if plotting failed
+    """
+    try:
+        plt = _ensure_matplotlib()
+    except ImportError as e:
+        logger.warning("Skipping noise diagnostics plot: %s", e)
+        return None
+
+    try:
+        out = Path(output_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        filename = f"run{run_id}_noise_diagnostics_2d.png"
+        filepath = out / filename
+
+        channels = [ch for ch in result.channels
+                    if ch.asymmetry_values and ch.rms_values
+                    and ch.edge_sharpness_values]
+        n_ch = len(channels)
+        if n_ch == 0:
+            return None
+
+        noisy_channels = getattr(result, "noisy_channels", set())
+
+        pair_labels = [
+            ("asymmetry", "edge_sharpness"),
+            ("asymmetry", "RMS (ADC)"),
+            ("edge_sharpness", "RMS (ADC)"),
+        ]
+
+        # 3 rows (feature pairs) x 2 cols (dark | noise) per channel
+        fig, axes = plt.subplots(
+            n_ch * 3, 2,
+            figsize=(9, 2.8 * n_ch * 3),
+            squeeze=False,
+        )
+        fig.suptitle(
+            f"Noise Diagnostics 2D — run_id={run_id}  "
+            f"Dark (Blue) / Noise (Red)  "
+            f"asym_thr={result.asymmetry_threshold} | "
+            f"sharp_thr={result.metadata.get('edge_sharpness_threshold', '-')}",
+            fontsize=10,
+        )
+
+        for ch_idx, ch in enumerate(channels):
+            is_noisy = (ch.board, ch.channel) in noisy_channels
+
+            asyms = np.array(ch.asymmetry_values)
+            rms_vals = np.array(ch.rms_values)
+            edge_sharp = np.array(ch.edge_sharpness_values)
+            is_dark = np.array(ch.is_dark_count_list, dtype=bool)
+
+            if sample_size and len(asyms) > sample_size:
+                rng = np.random.RandomState(42)
+                # Downsample each class proportionally
+                dark_idx = np.where(is_dark)[0]
+                noise_idx = np.where(~is_dark)[0]
+                n_dark = min(sample_size // 4, len(dark_idx))
+                n_noise = min(sample_size - n_dark, len(noise_idx))
+                chosen = np.concatenate([
+                    rng.choice(dark_idx, size=n_dark, replace=False) if n_dark > 0 else [],
+                    rng.choice(noise_idx, size=n_noise, replace=False) if n_noise > 0 else [],
+                ]).astype(int)
+                asyms = asyms[chosen]
+                rms_vals = rms_vals[chosen]
+                edge_sharp = edge_sharp[chosen]
+                is_dark = is_dark[chosen]
+
+            dark_mask = is_dark
+            noise_mask = ~is_dark
+
+            pairs_data = [
+                (asyms, edge_sharp),
+                (asyms, rms_vals),
+                (edge_sharp, rms_vals),
+            ]
+
+            for pair_idx in range(3):
+                x_data, y_data = pairs_data[pair_idx]
+                x_label, y_label = pair_labels[pair_idx]
+
+                x_dark = x_data[dark_mask]
+                y_dark = y_data[dark_mask]
+                x_noise = x_data[noise_mask]
+                y_noise = y_data[noise_mask]
+
+                if len(x_data) == 0:
+                    for col in [0, 1]:
+                        ax = axes[ch_idx * 3 + pair_idx, col]
+                        ax.text(0.5, 0.5, "No data", transform=ax.transAxes,
+                                ha="center", va="center", fontsize=7, color="gray")
+                    continue
+
+                x_min = float(np.percentile(x_data, 0.5))
+                x_max = float(np.percentile(x_data, 99.5))
+                y_min = float(np.percentile(y_data, 0.5))
+                y_max = float(np.percentile(y_data, 99.5))
+                x_pad = max((x_max - x_min) * 0.05, 0.01)
+                y_pad = max((y_max - y_min) * 0.05, 0.01)
+                x_range = (x_min - x_pad, x_max + x_pad)
+                y_range = (y_min - y_pad, y_max + y_pad)
+
+                # Compute shared color scale from combined data
+                h_all, _, _ = np.histogram2d(x_data, y_data, bins=n_bins,
+                                             range=[x_range, y_range])
+                vmin = max(h_all[h_all > 0].min() if np.any(h_all > 0) else 0.1, 0.1)
+                vmax = h_all.max() if h_all.max() > 0 else 1
+
+                # === Left: Dark Count (Blue) ===
+                ax_dark = axes[ch_idx * 3 + pair_idx, 0]
+                if len(x_dark) > 2:
+                    ax_dark.hist2d(x_dark, y_dark, bins=n_bins,
+                                   range=[x_range, y_range],
+                                   cmap="Blues", vmin=vmin, vmax=vmax)
+                else:
+                    ax_dark.text(0.5, 0.5, "no dark", transform=ax_dark.transAxes,
+                                 ha="center", va="center", fontsize=7, color="lightgray")
+                _draw_threshold_lines(ax_dark, x_label, y_label, result)
+                n_d = np.sum(dark_mask)
+                n_n = np.sum(noise_mask)
+                label = f"B{ch.board}Ch{ch.channel}  DARK (n={n_d})"
+                ax_dark.set_title(label, fontsize=7, color="steelblue")
+                ax_dark.set_xlabel(x_label, fontsize=6)
+                ax_dark.set_ylabel(y_label, fontsize=6)
+                ax_dark.tick_params(labelsize=5)
+
+                # === Right: Noise (Red) ===
+                ax_noise = axes[ch_idx * 3 + pair_idx, 1]
+                if len(x_noise) > 2:
+                    ax_noise.hist2d(x_noise, y_noise, bins=n_bins,
+                                    range=[x_range, y_range],
+                                    cmap="Reds", vmin=vmin, vmax=vmax)
+                else:
+                    ax_noise.text(0.5, 0.5, "no noise", transform=ax_noise.transAxes,
+                                  ha="center", va="center", fontsize=7, color="lightgray")
+                _draw_threshold_lines(ax_noise, x_label, y_label, result)
+                label_n = f"B{ch.board}Ch{ch.channel}  NOISE (n={n_n})"
+                ax_noise.set_title(label_n, fontsize=7, color="firebrick")
+                ax_noise.set_xlabel(x_label, fontsize=6)
+                ax_noise.set_ylabel(y_label, fontsize=6)
+                ax_noise.tick_params(labelsize=5)
+
+                # Yellow border for noisy channels
+                if is_noisy:
+                    for col in [0, 1]:
+                        for spine in axes[ch_idx * 3 + pair_idx, col].spines.values():
+                            spine.set_edgecolor("gold")
+                            spine.set_linewidth(2)
+
+        fig.tight_layout(rect=[0, 0, 1, 0.97])
+        fig.savefig(str(filepath), dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        logger.info("Noise diagnostics 2D plot saved: %s", filepath)
+        return str(filepath)
+
+    except Exception as e:
+        logger.warning("Failed to generate noise diagnostics 2D plot: %s", e)
+        return None
+
+
+def _draw_threshold_lines(ax, x_label: str, y_label: str, result: DarkCountResult) -> None:
+    """Draw asymmetry and edge_sharpness threshold lines on an axis."""
+    if "asymmetry" == x_label:
+        ax.axvline(result.asymmetry_threshold, color="gray",
+                   linestyle="--", linewidth=0.8, alpha=0.6)
+    if "asymmetry" == y_label:
+        ax.axhline(result.asymmetry_threshold, color="gray",
+                   linestyle="--", linewidth=0.8, alpha=0.6)
+    edge_thr = result.metadata.get("edge_sharpness_threshold")
+    if edge_thr is not None:
+        if "edge_sharpness" == x_label:
+            ax.axvline(edge_thr, color="green", linestyle=":",
+                       linewidth=0.8, alpha=0.5)
+        if "edge_sharpness" == y_label:
+            ax.axhline(edge_thr, color="green", linestyle=":",
+                       linewidth=0.8, alpha=0.5)

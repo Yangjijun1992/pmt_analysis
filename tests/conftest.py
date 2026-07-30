@@ -71,7 +71,7 @@ def make_records(
         records[i]["channel"] = channels[i % len(channels)]
         records[i]["time"] = time_start + i * time_step
         records[i]["event_length"] = 200
-        records[i]["baseline"] = 20000.0
+        records[i]["baseline"] = 0.0
 
     return records
 

@@ -54,8 +54,8 @@ class TestComputePulseRecord:
         assert pr.is_dark_count is True
 
     def test_baseline_deviation_filtered(self):
-        """Waveform with |deviation| < 15200 is filtered out (returns None)."""
-        wave = make_waveform(pulse_height=-500.0, baseline=2.0)
+        """Waveform with |deviation| > 15200 is filtered out (returns None)."""
+        wave = make_waveform(pulse_height=-500.0, baseline=16000.0)
         pr = compute_pulse_record(
             wave, record_id=0, board=0, channel=0,
             record_baseline=0.0,
@@ -63,14 +63,14 @@ class TestComputePulseRecord:
         assert pr is None
 
     def test_baseline_deviation_passed(self):
-        """Waveform with |deviation| >= 15200 passes the filter."""
-        wave = make_waveform(pulse_height=-500.0, baseline=16000.0)
+        """Waveform with |deviation| < 15200 passes the filter."""
+        wave = make_waveform(pulse_height=-500.0, baseline=2.0)
         pr = compute_pulse_record(
             wave, record_id=0, board=0, channel=0,
             record_baseline=0.0,
         )
         assert pr is not None
-        assert pr.baseline_deviation > 15000.0
+        assert pr.baseline_deviation < 15200.0
 
     def test_baseline_check_disabled(self):
         """When record_baseline is None, no filter is applied."""
