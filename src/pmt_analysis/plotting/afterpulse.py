@@ -61,7 +61,7 @@ def plot_afterpulse_waveforms(
 
     if output_path is None:
         output_path = str(
-            Path("output") / f"run{bundle.runinfo.run_id}_ch{channel}_afterpulse_waves.png"
+            Path("/mnt/data/PMT/R8520_406/output") / f"run{bundle.runinfo.run_id}_ch{channel}_afterpulse_waves.png"
         )
 
     fig.savefig(output_path, dpi=120, bbox_inches="tight")
@@ -122,7 +122,7 @@ def plot_afterpulse_waveforms_bsl_subtracted(
 
     if output_path is None:
         output_path = str(
-            Path("output") / f"run{bundle.runinfo.run_id}_ch{channel}_afterpulse_bsl.png"
+            Path("/mnt/data/PMT/R8520_406/output") / f"run{bundle.runinfo.run_id}_ch{channel}_afterpulse_bsl.png"
         )
 
     fig.savefig(output_path, dpi=120, bbox_inches="tight")

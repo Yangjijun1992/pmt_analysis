@@ -6,6 +6,7 @@ __pycache__/
 *.egg
 dist/
 build/
+docs/
 .eggs/
 
 # Backup files

@@ -77,6 +77,7 @@ def build_pmt_records(
 
         dark_count_rate_val = dcr.dark_count_rate_hz if dcr else None
         spe_gain_val = gr.gain_value if gr and gr.fit_success else None
+        energy_res = (gr.sigma / gr.gain_value) if gr and gr.fit_success and gr.gain_value else None
         app_val = app_by_board_ch.get(key)
 
         if dark_count_rate_val is None and spe_gain_val is None and app_val is None:
@@ -91,6 +92,7 @@ def build_pmt_records(
             dark_count_rate=dark_count_rate_val,
             spe_gain=spe_gain_val,
             after_pulse_probability=app_val,
+            energy_resolution=energy_res,
         ))
 
     return records
@@ -106,8 +108,8 @@ def write_measurements(
     sql = f"""
         INSERT INTO measurements
             (pmt_id, board_id, channel_id, run_id, measurement_time,
-             dark_count_rate, spe_gain, after_pulse_probability, notes)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+             dark_count_rate, spe_gain, after_pulse_probability, energy_resolution, notes)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """
 
     rows = [
@@ -120,6 +122,7 @@ def write_measurements(
             r.dark_count_rate,
             r.spe_gain,
             r.after_pulse_probability,
+            r.energy_resolution,
             r.notes,
         )
         for r in records

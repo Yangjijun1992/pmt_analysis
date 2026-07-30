@@ -8,6 +8,10 @@ import numpy as np
 from pmt_analysis.io.raw_reader import RawDataBundle
 
 
+DEFAULT_BASELINE_SAMPLES = 10
+DEFAULT_BASELINE_DEVIATION_THRESHOLD = 15200.0  # ADC
+
+
 @dataclass
 class PulseRecord:
     """Single pulse analysis result."""
@@ -19,6 +23,7 @@ class PulseRecord:
     pulse_range: float
     asymmetry: float
     is_dark_count: bool
+    baseline_deviation: float = 0.0
 
 
 @dataclass
@@ -30,8 +35,9 @@ class ChannelDarkCountResult:
     total_pulses: int
     dark_count: int
     noise_count: int
-    dark_count_rate_hz: Optional[float]
+    dark_count_rate_hz: Optional[float] = None
     asymmetry_values: List[float] = field(default_factory=list)
+    baseline_deviations: List[float] = field(default_factory=list)
 
 
 @dataclass
@@ -42,8 +48,8 @@ class DarkCountResult:
     total_pulse_count: int
     total_dark_count: int
     total_noise_count: int
-    total_daq_run_time_length_s: Optional[float]
-    dark_count_rate_hz: Optional[float]
+    total_daq_run_time_length_s: Optional[float] = None
+    dark_count_rate_hz: Optional[float] = None
     channels: List[ChannelDarkCountResult] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
 
@@ -77,8 +83,17 @@ def compute_pulse_record(
     board: int,
     channel: int,
     asymmetry_threshold: float = 0.7,
-) -> PulseRecord:
+    record_baseline: Optional[float] = None,
+    baseline_samples: int = DEFAULT_BASELINE_SAMPLES,
+    baseline_deviation_threshold: float = DEFAULT_BASELINE_DEVIATION_THRESHOLD,
+) -> Optional[PulseRecord]:
     """Compute pulse record for a single waveform.
+
+    Baseline deviation:
+        If record_baseline (DAQ upstream) is provided, compute local
+        baseline from the first baseline_samples points of the waveform.
+        If |local_baseline - record_baseline| < baseline_deviation_threshold,
+        the waveform is rejected (returns None).
 
     Asymmetry formula (from notebook):
         pulse_height = abs(min(wave))  # assuming negative pulse
@@ -89,7 +104,17 @@ def compute_pulse_record(
     Classification:
         asymmetry > threshold -> dark count
         asymmetry <= threshold -> noise
+
+    Returns:
+        PulseRecord, or None if the waveform is filtered out.
     """
+    deviation = 0.0
+    if record_baseline is not None:
+        local_baseline = float(np.mean(wave[:baseline_samples]))
+        deviation = local_baseline - record_baseline
+        if abs(deviation) > baseline_deviation_threshold:
+            return None
+
     pulse_height = abs(float(np.min(wave)))
     overshoot = float(np.max(wave))
     pulse_range = pulse_height + overshoot
@@ -109,6 +134,7 @@ def compute_pulse_record(
         pulse_range=pulse_range,
         asymmetry=asymmetry,
         is_dark_count=is_dark_count,
+        baseline_deviation=deviation,
     )
 
 
@@ -175,7 +201,9 @@ def analyze_dark_count(
         for channel in channels_per_board[board]:
             # Get record IDs for this channel
             mask = (records["board"] == board) & (records["channel"] == channel)
-            rec_ids = records[mask]["record_id"]
+            rec_slice = records[mask]
+            rec_ids = rec_slice["record_id"]
+            rec_baselines = rec_slice["baseline"]
 
             if len(rec_ids) == 0:
                 continue
@@ -186,10 +214,12 @@ def analyze_dark_count(
             dark_count = 0
             noise_count = 0
             asym_values: List[float] = []
+            baseline_deviations: List[float] = []
 
             for i in range(len(waves)):
                 wave = waves[i]
                 record_id = int(rec_ids[i])
+                record_baseline = float(rec_baselines[i])
 
                 pulse = compute_pulse_record(
                     wave=wave,
@@ -197,9 +227,14 @@ def analyze_dark_count(
                     board=board,
                     channel=channel,
                     asymmetry_threshold=asymmetry_threshold,
+                    record_baseline=record_baseline,
                 )
 
+                if pulse is None:
+                    continue
+
                 asym_values.append(pulse.asymmetry)
+                baseline_deviations.append(pulse.baseline_deviation)
 
                 if pulse.is_dark_count:
                     dark_count += 1
@@ -224,6 +259,7 @@ def analyze_dark_count(
                 noise_count=noise_count,
                 dark_count_rate_hz=dcr_hz,
                 asymmetry_values=asym_values,
+                baseline_deviations=baseline_deviations,
             ))
 
     # Overall dark count rate

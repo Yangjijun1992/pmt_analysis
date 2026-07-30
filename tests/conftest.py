@@ -61,6 +61,7 @@ def make_records(
         ("channel", "i4"),
         ("time", "i8"),
         ("event_length", "i4"),
+        ("baseline", "f8"),
     ])
 
     records = np.zeros(n_records, dtype=dtype)
@@ -70,6 +71,7 @@ def make_records(
         records[i]["channel"] = channels[i % len(channels)]
         records[i]["time"] = time_start + i * time_step
         records[i]["event_length"] = 200
+        records[i]["baseline"] = 20000.0
 
     return records
 

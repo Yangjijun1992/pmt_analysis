@@ -7,7 +7,7 @@ Analysis Logic Summary:
     1. Extract gain samples from raw waveforms:
        - Baseline correction: mean of first 30 samples
        - RMS filtering: skip waveforms with RMS > 4
-       - Integration window: sample 97-10 ~ 97+5 (asymmetric, 15 samples)
+        - Integration window: sample 105 ~ 115 (symmetric, 10 samples)
        - Area calculation: -sum(window - baseline) * pe_fact
        - pe_fact = (2/16384) * 4e-9 / (50 * 1.6e-19) / 1e6
 
@@ -86,8 +86,9 @@ def extract_gain_samples(
     channels: Optional[List[int]] = None,
     n_waveforms: int = 300000,
     n_baseline_points: int = 30,
-    center_idx: int = 97,
-    win_left: int = 10,
+    center_idx: int = 110,
+    # center_idx: int = 95,
+    win_left: int = 5,
     win_right: int = 5,
     rms_threshold: float = 50.0,
 ) -> Dict[int, List[GainSample]]:
@@ -171,7 +172,7 @@ def extract_gain_samples(
 def build_spe_histogram(
     samples: List[GainSample],
     bins: int = 100,
-    hist_range: Tuple[float, float] = (-15.0, 100.0),
+    hist_range: Tuple[float, float] = (-10.0, 40.0),
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Build histogram of SPE area values.
 
@@ -193,7 +194,7 @@ def fit_spe_spectrum(
     edges: np.ndarray,
     mu_init: float = 10.0,
     sigma_init: float = 2.0,
-    fit_range: Tuple[float, float] = (2.0, 15.0),
+    fit_range: Tuple[float, float] = (3.0, 15.0),
     mu_bounds: Tuple[float, float] = (0.1, 30.0),
     sigma_bounds: Tuple[float, float] = (0.0, 12.0),
     amp_bounds: Tuple[float, float] = (100.0, 1e5),

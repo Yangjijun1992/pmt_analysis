@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS {TABLE_NAME} (
     dark_count_rate  REAL,
     spe_gain        REAL,
     after_pulse_probability REAL,
+    energy_resolution REAL,
     notes           TEXT,
     created_at      TEXT    DEFAULT (datetime('now'))
 );
@@ -35,6 +36,7 @@ class MeasurementRecord:
     dark_count_rate: Optional[float] = None
     spe_gain: Optional[float] = None
     after_pulse_probability: Optional[float] = None
+    energy_resolution: Optional[float] = None
     notes: Optional[str] = None
 
 
@@ -48,6 +50,7 @@ REQUIRED_COLUMNS = {
     "dark_count_rate": "REAL",
     "spe_gain": "REAL",
     "after_pulse_probability": "REAL",
+    "energy_resolution": "REAL",
     "notes": "TEXT",
 }
 

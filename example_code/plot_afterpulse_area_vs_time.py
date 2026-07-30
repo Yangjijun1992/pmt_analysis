@@ -5,7 +5,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from pathlib import Path
 
-OUTPUT_DIR = Path("output")
+OUTPUT_DIR = Path("/mnt/data/PMT/R8520_406/output")
 RUN_ID = "00305"
 
 # Channels to plot

@@ -124,6 +124,97 @@ def plot_dark_count_validation(
         return None
 
 
+def plot_dark_count_baseline_2d(
+    result: DarkCountResult,
+    output_dir: str | Path,
+    run_id: str | int,
+    n_bins: int = 80,
+) -> Optional[str]:
+    """Generate per-channel 2D histogram: baseline deviation vs asymmetry.
+
+    Each channel gets its own subplot showing the 2D distribution of
+    (record_baseline - local_baseline) vs asymmetry.
+
+    Args:
+        result: DarkCountResult from analyze_dark_count()
+        output_dir: Directory to save the plot
+        run_id: Run ID for filename and title
+        n_bins: Number of bins for each axis in the 2D histogram
+
+    Returns:
+        Saved file path, or None if plotting failed
+    """
+    try:
+        plt = _ensure_matplotlib()
+    except ImportError as e:
+        logger.warning("Skipping baseline 2D plot: %s", e)
+        return None
+
+    try:
+        out = Path(output_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        filename = f"run{run_id}_baseline_2d.png"
+        filepath = out / filename
+
+        channels = [ch for ch in result.channels
+                    if ch.baseline_deviations and ch.asymmetry_values]
+        n_ch = len(channels)
+        if n_ch == 0:
+            return None
+
+        ncols = min(n_ch, 4)
+        nrows = (n_ch + ncols - 1) // ncols
+
+        fig, axes = plt.subplots(nrows, ncols, figsize=(3.5 * ncols, 2.8 * nrows),
+                                 squeeze=False)
+        fig.suptitle(f"Baseline Deviation vs Asymmetry — run_id={run_id}",
+                     fontsize=11)
+
+        for idx, ch in enumerate(channels):
+            r = idx // ncols
+            c = idx % ncols
+            ax = axes[r][c]
+
+            devs = np.array(ch.baseline_deviations)
+            asyms = np.array(ch.asymmetry_values)
+
+            if len(devs) == 0 or len(asyms) == 0:
+                ax.text(0.5, 0.5, "No data", transform=ax.transAxes,
+                        ha="center", va="center", fontsize=10, color="gray")
+                ax.set_title(f"B{ch.board}Ch{ch.channel}", fontsize=9)
+                continue
+
+            ax.hist2d(asyms, devs, bins=n_bins,
+                      cmap="jet")
+            ax.axhline(0, color="gray", linestyle="--", linewidth=0.6, alpha=0.6)
+            ax.axvline(result.asymmetry_threshold, color="red", linestyle="--",
+                       linewidth=0.8, alpha=0.7,
+                       label=f"asym threshold ({result.asymmetry_threshold})")
+
+            mean_dev = float(np.mean(devs))
+            std_dev = float(np.std(devs))
+            ax.set_title(f"B{ch.board}Ch{ch.channel} (n={len(devs)})", fontsize=9)
+            ax.set_xlabel("Asymmetry", fontsize=7)
+            ax.set_ylabel("Baseline Dev (ADC)", fontsize=7)
+            ax.tick_params(labelsize=7)
+            ax.legend(fontsize=6, loc="upper right")
+
+        for idx in range(n_ch, nrows * ncols):
+            r = idx // ncols
+            c = idx % ncols
+            axes[r][c].set_visible(False)
+
+        fig.tight_layout(rect=[0, 0, 1, 0.93])
+        fig.savefig(str(filepath), dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        logger.info("Baseline 2D plot saved: %s", filepath)
+        return str(filepath)
+
+    except Exception as e:
+        logger.warning("Failed to generate baseline 2D plot: %s", e)
+        return None
+
+
 def plot_spe_gain_validation(
     result: GainAnalysisResult,
     output_dir: str | Path,
@@ -250,8 +341,8 @@ def plot_waveform_overlay(
     run_id: str | int,
     board: int = 0,
     n_waveforms: int = 100,
-    int_center: int = 97,
-    int_left: int = 10,
+    int_center: int = 110,
+    int_left: int = 5,
     int_right: int = 5,
     x_range: Optional[Tuple[int, int]] = None,
 ) -> Optional[str]:
@@ -267,8 +358,8 @@ def plot_waveform_overlay(
         run_id: Run ID for filename and title
         board: Board number to plot (default 0)
         n_waveforms: Number of waveforms per channel to overlay (default 100)
-        int_center: Center sample index for integration window (default 97)
-        int_left: Left half-width of integration window (default 10)
+        int_center: Center sample index for integration window (default 110)
+        int_left: Left half-width of integration window (default 5)
         int_right: Right half-width of integration window (default 5)
         x_range: Optional (start, end) sample range to display on x-axis
 
@@ -364,12 +455,12 @@ def plot_area_histogram(
     run_id: str | int,
     board: int = 0,
     n_waveforms: int = 300000,
-    center_idx: int = 97,
-    win_left: int = 10,
+    center_idx: int = 110,
+    win_left: int = 5,
     win_right: int = 5,
     n_bins: int = 50,
     hist_range: Tuple[float, float] = (-10.0, 50.0),
-    fit_range: Tuple[float, float] = (2.0, 15.0),
+    fit_range: Tuple[float, float] = (3.0, 15.0),
     histogram_counts: Optional[Dict[int, Tuple[np.ndarray, np.ndarray]]] = None,
     fit_params: Optional[Dict[int, Dict[str, float]]] = None,
 ) -> Optional[str]:
@@ -497,8 +588,8 @@ def plot_filtered_waveform_overlay(
     run_id: str | int,
     board: int = 0,
     n_waveforms: int = 100,
-    int_center: int = 97,
-    int_left: int = 10,
+    int_center: int = 110,
+    int_left: int = 5,
     int_right: int = 5,
     x_range: Optional[Tuple[int, int]] = None,
     rms_threshold: float = 50.0,
@@ -517,8 +608,8 @@ def plot_filtered_waveform_overlay(
         run_id: Run ID for filename and title
         board: Board number to plot (default 0)
         n_waveforms: Number of waveforms per channel to overlay (default 100)
-        int_center: Center sample index for integration window (default 97)
-        int_left: Left half-width of integration window (default 10)
+        int_center: Center sample index for integration window (default 110)
+        int_left: Left half-width of integration window (default 5)
         int_right: Right half-width of integration window (default 5)
         x_range: Optional (start, end) sample range to display on x-axis
         rms_threshold: Max allowed baseline RMS (default 50.0)

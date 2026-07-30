@@ -22,6 +22,7 @@ from pmt_analysis.io.raw_reader import NotebookBasedRawDataReader
 from pmt_analysis.models import RunInfo
 from pmt_analysis.plotting.validation import (
     plot_area_histogram,
+    plot_dark_count_baseline_2d,
     plot_dark_count_validation,
     plot_filtered_waveform_overlay,
     plot_spe_gain_validation,
@@ -102,6 +103,17 @@ def analyze_runs(
             print(f"[run_id={ri.run_id}] daq_time_s     = {meta.get('daq_time_s', 'N/A'):.3f}")
             print()
 
+            # Build pmt_id_map from runinfo mapping (used across all analysis types)
+            pmt_id_map: Dict[Tuple[int, int], str] = {}
+            raw_mapping = ri.metadata.get("mapping")
+            if raw_mapping:
+                for board_info in raw_mapping:
+                    board_id = board_info["board_id"]
+                    for ch_info in board_info.get("channels", []):
+                        ch_id = ch_info["ch"]
+                        pmt_id = ch_info["pmt"]
+                        pmt_id_map[(board_id, ch_id)] = pmt_id
+
             # Normalize datatype list for lookup
             dt_set = {d.lower() for d in ri.datatype}
 
@@ -148,8 +160,9 @@ def analyze_runs(
 
                 for ch_result in dcr_result.channels:
                     rate_str = f"{ch_result.dark_count_rate_hz:.2f} Hz" if ch_result.dark_count_rate_hz is not None else "N/A"
+                    pmt_id = pmt_id_map.get((ch_result.board, ch_result.channel), "?")
                     print(
-                        f"[run_id={ri.run_id}]   Board {ch_result.board}, Channel {ch_result.channel}: "
+                        f"[run_id={ri.run_id}]   Board {ch_result.board}, Channel {ch_result.channel} ({pmt_id}): "
                         f"pulses={ch_result.total_pulses}, dark={ch_result.dark_count}, "
                         f"noise={ch_result.noise_count}, rate={rate_str}"
                     )
@@ -165,9 +178,10 @@ def analyze_runs(
                 gain_result = analyze_gain(bundle)
                 print(f"[run_id={ri.run_id}] SPE Gain Analysis Results:")
                 for ch_result in gain_result.channels:
+                    pmt_id = pmt_id_map.get((ch_result.board, ch_result.channel), "?")
                     if ch_result.fit_success:
                         print(
-                            f"[run_id={ri.run_id}]   Board {ch_result.board}, Channel {ch_result.channel}: "
+                            f"[run_id={ri.run_id}]   Board {ch_result.board}, Channel {ch_result.channel} ({pmt_id}): "
                             f"sample_count={ch_result.sample_count}, "
                             f"feature_name=SPE_charge, "
                             f"fit_success=True, "
@@ -176,7 +190,7 @@ def analyze_runs(
                         )
                     else:
                         print(
-                            f"[run_id={ri.run_id}]   Board {ch_result.board}, Channel {ch_result.channel}: "
+                            f"[run_id={ri.run_id}]   Board {ch_result.board}, Channel {ch_result.channel} ({pmt_id}): "
                             f"sample_count={ch_result.sample_count}, "
                             f"feature_name=SPE_charge, "
                             f"fit_success=False"
@@ -191,17 +205,6 @@ def analyze_runs(
             if "after pulse" in dt_set:
                 print(f"[run_id={ri.run_id}] Running APP analysis...")
                 try:
-                    # Build pmt_id_map from runinfo mapping
-                    pmt_id_map = {}
-                    raw_mapping = ri.metadata.get("mapping")
-                    if raw_mapping:
-                        for board_info in raw_mapping:
-                            board_id = board_info["board_id"]
-                            for ch_info in board_info.get("channels", []):
-                                ch_id = ch_info["ch"]
-                                pmt_id = ch_info["pmt"]
-                                pmt_id_map[(board_id, ch_id)] = pmt_id
-
                     app_result = analyze_app(bundle, pmt_id_map=pmt_id_map or None)
                     print(f"[run_id={ri.run_id}] main_pulse_count = {app_result.main_pulse_count}")
                     print(f"[run_id={ri.run_id}] afterpulse_count = {app_result.afterpulse_count}")
@@ -299,6 +302,15 @@ def analyze_runs(
                         run_plot_paths.append(dcr_plot)
                         print(f"[run_id={ri.run_id}]   dark_count plot: {dcr_plot}")
 
+                    baseline_2d_plot = plot_dark_count_baseline_2d(
+                        result=dcr_result,
+                        output_dir=output_path,
+                        run_id=ri.run_id,
+                    )
+                    if baseline_2d_plot:
+                        run_plot_paths.append(baseline_2d_plot)
+                        print(f"[run_id={ri.run_id}]   baseline_2d plot: {baseline_2d_plot}")
+
                 if gain_result is not None:
                     hist_dict: Dict[int, Tuple[np.ndarray, np.ndarray]] = {}
                     params_dict: Dict[int, Dict[str, float]] = {}
@@ -325,8 +337,8 @@ def analyze_runs(
                         run_id=ri.run_id,
                         histogram_counts=hist_dict or None,
                         fit_params=params_dict or None,
-                        hist_range=(-10.0, 50.0),
-                        n_bins=50,
+                        hist_range=(-10.0, 40.0),
+                        n_bins=100,
                     )
                     if area_plot:
                         run_plot_paths.append(area_plot)
