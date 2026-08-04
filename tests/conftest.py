@@ -62,6 +62,7 @@ def make_records(
         ("time", "i8"),
         ("event_length", "i4"),
         ("baseline", "f8"),
+        ("dt", "f8"),
     ])
 
     records = np.zeros(n_records, dtype=dtype)
@@ -72,6 +73,7 @@ def make_records(
         records[i]["time"] = time_start + i * time_step
         records[i]["event_length"] = 200
         records[i]["baseline"] = 0.0
+        records[i]["dt"] = 4.0
 
     return records
 
