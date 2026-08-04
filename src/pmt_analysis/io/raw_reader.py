@@ -52,6 +52,7 @@ def load_raw_data_from_notebook_logic(
     try:
         from waveform_analysis.core.context import Context
         from waveform_analysis.core import records_view
+        from waveform_analysis.utils.formats import get_adapter        
     except ImportError as e:
         raise ImportError(
             "waveform_analysis package is required for raw data loading. "
@@ -61,7 +62,12 @@ def load_raw_data_from_notebook_logic(
 
     # Derive storage_dir from runinfo: /mnt/data/TPC/{runtype}/
     storage_dir = str(runinfo.run_dir.parent) + "/"
-
+    
+    v1725_reader = get_adapter("v1725").format_reader
+    if not hasattr(v1725_reader, "use_optimized"):
+        raise RuntimeError("installed V1725 reader cannot select its parse path")
+    v1725_reader.use_optimized = False
+    
     ctx = Context(storage_dir=storage_dir)
 
     # Register minimal plugins for data reading
