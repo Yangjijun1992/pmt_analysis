@@ -9,10 +9,22 @@ Algorithm Summary:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 
+from pmt_analysis.analysis.app_noise_suppress import (
+    DEFAULT_NOISE_CHANNEL_RMS_THRESHOLD as DEFAULT_APP_NOISE_RMS_THRESHOLD,
+    DEFAULT_QUALITY_RMS_THRESHOLD,
+    DEFAULT_MEDIAN_WINDOW_SIZE,
+    DEFAULT_TRIGGER_SIGMA,
+    DEFAULT_SLOPE_THRESHOLD,
+    DEFAULT_DEAD_TIME_SAMPLES,
+    NoiseSuppressionResult,
+    detect_noisy_channels,
+    compute_channel_baseline_stats,
+    find_afterpulses_with_noise_suppression,
+)
 from pmt_analysis.io.raw_reader import RawDataBundle
 
 PE_FACT = (2.0 / 16384.0) * 4.0e-9 / (50.0 * 1.6e-19) / 1.0e6
@@ -1075,12 +1087,21 @@ def analyze_app(
     afterpulse_min_interval: int = DEFAULT_AFTERPULSE_MIN_INTERVAL,
     min_interval_between_pulses: int = DEFAULT_MIN_INTERVAL_BETWEEN_PULSES,
     pmt_id_map: Optional[Dict[Tuple[int, int], str]] = None,
+    noise_suppression_enabled: bool = True,
+    noise_channel_rms_threshold: float = DEFAULT_APP_NOISE_RMS_THRESHOLD,
+    quality_rms_threshold: float = DEFAULT_QUALITY_RMS_THRESHOLD,
+    median_window_size: int = DEFAULT_MEDIAN_WINDOW_SIZE,
+    trigger_sigma: float = DEFAULT_TRIGGER_SIGMA,
+    slope_threshold: float = DEFAULT_SLOPE_THRESHOLD,
+    dead_time_samples: int = DEFAULT_DEAD_TIME_SAMPLES,
 ) -> AppAnalysisResult:
     """Perform complete APP analysis.
 
     Steps:
+        0. Detect noisy channels (baseline RMS >= threshold)
         1. Find main pulses per channel
-        2. Find afterpulse candidates per channel
+        2a. Normal channels: standard afterpulse search
+        2b. Noisy channels: noise-suppressed afterpulse search
         3. Select afterpulses per channel
         4. Load SPE gains by pmt_id (if pmt_id_map provided)
         5. Normalize charges to PE
@@ -1093,8 +1114,63 @@ def analyze_app(
         afterpulse_min_interval: Minimum samples between main pulse end and afterpulse
         min_interval_between_pulses: Minimum interval between afterpulses
         pmt_id_map: Dict mapping (board, channel) -> pmt_id for SPE gain lookup
+        noise_suppression_enabled: Enable noise suppression for noisy channels
+        noise_channel_rms_threshold: Baseline RMS threshold for noisy flag
+        quality_rms_threshold: Hard event-level RMS rejection threshold
+        median_window_size: Sliding median window size for baseline extraction
+        trigger_sigma: N for dynamic trigger = -N * noise_RMS
+        slope_threshold: Minimum falling slope for valid afterpulse
+        dead_time_samples: Minimum samples between afterpulses
     """
     try:
+        # Step 0: Detect noisy channels
+        noise_results: Dict[int, NoiseSuppressionResult] = {}
+        noisy_channels: Set[int] = set()
+
+        if noise_suppression_enabled:
+            print(f"  Detecting noisy channels (RMS threshold={noise_channel_rms_threshold} ADC)...")
+
+            # Collect waveforms per channel for noise detection
+            rv = bundle.data
+            records = rv.records
+            waveforms_by_ch: Dict[int, List[np.ndarray]] = {}
+            for i in range(min(len(records), 700)):  # sample up to 700 records
+                rec = records[i]
+                ch = int(rec["channel"])
+                if ch not in waveforms_by_ch:
+                    waveforms_by_ch[ch] = []
+                if len(waveforms_by_ch[ch]) < 100:
+                    rid = int(rec["record_id"])
+                    wave = rv.signals(np.array([rid]))[0]
+                    waveforms_by_ch[ch].append(wave)
+
+            noisy_channels = detect_noisy_channels(
+                waveforms_by_ch, rms_threshold=noise_channel_rms_threshold,
+            )
+            bl_stats = compute_channel_baseline_stats(waveforms_by_ch)
+
+            for ch in sorted(set(waveforms_by_ch.keys())):
+                is_noisy = ch in noisy_channels
+                bl_rms = bl_stats.get(ch, 0.0)
+                noise_results[ch] = NoiseSuppressionResult(
+                    channel=ch,
+                    is_noisy=is_noisy,
+                    baseline_rms=bl_rms,
+                    median_window_size=median_window_size,
+                    trigger_sigma=trigger_sigma,
+                    slope_threshold=slope_threshold,
+                    quality_rms_threshold=quality_rms_threshold,
+                )
+                status = f"noisy (RMS={bl_rms:.1f}, noise suppression ENABLED)" if is_noisy else f"clean (RMS={bl_rms:.1f})"
+                print(f"    CH{ch}: {status}")
+
+            if noisy_channels:
+                print(f"    Noisy channels: {sorted(noisy_channels)} — applying noise suppression")
+            else:
+                print(f"    All channels clean — no noise suppression needed")
+        else:
+            print(f"    Noise suppression disabled")
+
         # Step 1: Find main pulses per channel
         main_pulses_by_ch = find_main_pulses_per_channel(
             bundle, height_threshold=main_pulse_height_threshold,
@@ -1107,60 +1183,154 @@ def analyze_app(
             afterpulse_min_interval=afterpulse_min_interval,
         )
 
-        # Step 3: Select afterpulses per channel
-        afterpulses_by_ch = select_afterpulses_per_channel(
+        # Step 2b: For noisy channels, run noise-suppressed afterpulse search
+        if noisy_channels:
+            print(f"    Running noise-suppressed afterpulse search on {len(noisy_channels)} noisy channel(s)...")
+            raw_afterpulses_by_ch = _merge_noise_suppressed_afterpulses(
+                bundle=bundle,
+                main_pulses_by_ch=main_pulses_by_ch,
+                raw_afterpulses_by_ch=raw_afterpulses_by_ch,
+                noisy_channels=noisy_channels,
+                noise_results=noise_results,
+                amplitude_threshold=amplitude_threshold,
+                afterpulse_min_interval=afterpulse_min_interval,
+                median_window_size=median_window_size,
+                quality_rms_threshold=quality_rms_threshold,
+                trigger_sigma=trigger_sigma,
+                slope_threshold=slope_threshold,
+                dead_time_samples=dead_time_samples,
+            )
+
+        # Step 3: Select afterpulses per channel (de-duplicate by interval)
+        selected_afterpulses_by_ch = select_afterpulses_per_channel(
             raw_afterpulses_by_ch,
             min_interval=min_interval_between_pulses,
         )
 
-        # Step 4: Load SPE gains by pmt_id
+        # Step 4: Load SPE gains (optional, requires pmt_id_map)
         spe_gains: Dict[Tuple[int, int], float] = {}
         if pmt_id_map:
-            print(f"  Loading SPE gains from pmtdata...")
             spe_gains = load_spe_gains_by_pmt_id(pmt_id_map)
-            if not spe_gains:
-                print(f"  WARNING: No SPE gains loaded, PE normalization skipped")
 
-        # Step 5: Normalize to PE
-        normalize_to_pe_per_channel(main_pulses_by_ch, afterpulses_by_ch, spe_gains)
-
-        # Step 6: Compute per-channel APP
-        channel_results = compute_app_per_channel(
-            main_pulses_by_ch, afterpulses_by_ch, spe_gains,
+        # Step 5: Normalize charges to PE
+        normalize_to_pe_per_channel(
+            main_pulses_by_ch, selected_afterpulses_by_ch, spe_gains,
         )
 
-        # Aggregate
-        total_main = sum(r.main_pulse_count for r in channel_results)
-        total_ap = sum(r.afterpulse_count for r in channel_results)
-        total_ap_with = sum(r.main_pulse_with_afterpulse_count for r in channel_results)
-        total_main_charge = sum(r.main_pulse_charge for r in channel_results)
-        total_ap_charge = sum(r.afterpulse_charge for r in channel_results)
-        total_main_charge_pe = sum(r.main_pulse_charge_pe for r in channel_results)
-        total_ap_charge_pe = sum(r.afterpulse_charge_pe for r in channel_results)
+        # Step 6: Compute APP per channel
+        channel_results = compute_app_per_channel(
+            main_pulses_by_ch, selected_afterpulses_by_ch, spe_gains,
+        )
 
-        app_overall = (total_ap_charge / total_main_charge) if total_main_charge > 0 else None
-        app_overall_pe = (total_ap_charge_pe / total_main_charge_pe) if total_main_charge_pe > 0 else None
+        # Build overall result
+        total_main = sum(ch_r.main_pulse_count for ch_r in channel_results)
+        total_ap = sum(ch_r.afterpulse_count for ch_r in channel_results)
+        total_ap_candidates = sum(
+            len(raw_afterpulses_by_ch.get((ch_r.board, ch_r.channel), []))
+            for ch_r in channel_results
+        )
+        total_main_with_ap = sum(
+            ch_r.main_pulse_with_afterpulse_count for ch_r in channel_results
+        )
 
-        total_raw_ap = sum(len(v) for v in raw_afterpulses_by_ch.values())
+        total_main_charge = sum(ch_r.main_pulse_charge for ch_r in channel_results)
+        total_ap_charge = sum(ch_r.afterpulse_charge for ch_r in channel_results)
+        total_main_charge_pe = sum(ch_r.main_pulse_charge_pe for ch_r in channel_results)
+        total_ap_charge_pe = sum(ch_r.afterpulse_charge_pe for ch_r in channel_results)
+
+        app_raw = (total_ap_charge / total_main_charge) if total_main_charge > 0 else None
+        app_pe = (
+            (total_ap_charge_pe / total_main_charge_pe)
+            if total_main_charge_pe > 0
+            else None
+        )
 
         return AppAnalysisResult(
             channels=channel_results,
             main_pulse_count=total_main,
-            afterpulse_candidate_count=total_raw_ap,
+            afterpulse_candidate_count=total_ap_candidates,
             afterpulse_count=total_ap,
-            main_pulse_with_afterpulse_count=total_ap_with,
-            app_value=app_overall,
-            app_value_pe=app_overall_pe,
+            main_pulse_with_afterpulse_count=total_main_with_ap,
+            app_value=app_raw,
+            app_value_pe=app_pe,
             metadata={
-                "run_id": bundle.runinfo.run_id,
-                "main_pulse_height_threshold": main_pulse_height_threshold,
-                "amplitude_threshold": amplitude_threshold,
-                "afterpulse_min_interval": afterpulse_min_interval,
-                "spe_gains_loaded": bool(spe_gains),
+                "noisy_channels": sorted(noisy_channels),
+                "noise_suppression_enabled": noise_suppression_enabled,
+                "noise_channel_rms_threshold": noise_channel_rms_threshold,
             },
         )
 
+    except AppAnalysisError:
+        raise
     except Exception as e:
-        raise AppAnalysisError(
-            f"APP analysis failed for run_id={bundle.runinfo.run_id}: {e}"
-        ) from e
+        raise AppAnalysisError(f"APP analysis failed: {e}") from e
+
+
+def _merge_noise_suppressed_afterpulses(
+    bundle: RawDataBundle,
+    main_pulses_by_ch: Dict[Tuple[int, int], List[MainPulseRecord]],
+    raw_afterpulses_by_ch: Dict[Tuple[int, int], List[AfterpulseRecord]],
+    noisy_channels: Set[int],
+    noise_results: Dict[int, NoiseSuppressionResult],
+    amplitude_threshold: float = DEFAULT_AMPLITUDE_THRESHOLD,
+    afterpulse_min_interval: int = DEFAULT_AFTERPULSE_MIN_INTERVAL,
+    median_window_size: int = 51,
+    quality_rms_threshold: float = 30.0,
+    trigger_sigma: float = 5.0,
+    slope_threshold: float = 0.5,
+    dead_time_samples: int = 35,
+) -> Dict[Tuple[int, int], List[AfterpulseRecord]]:
+    """Replace afterpulses for noisy channels with noise-suppressed results.
+
+    For clean channels, the original raw_afterpulses are kept unchanged.
+    For noisy channels, the noise-suppressed search replaces the original
+    afterpulse candidates.
+
+    Args:
+        bundle: Raw data bundle.
+        main_pulses_by_ch: Main pulse records per channel.
+        raw_afterpulses_by_ch: Original afterpulse candidates per channel.
+        noisy_channels: Channels that should use noise suppression.
+        noise_results: Per-channel noise suppression parameters.
+        amplitude_threshold: Not used (kept for interface compatibility).
+        afterpulse_min_interval: Minimum interval between main pulse and search.
+        median_window_size: Sliding median window size.
+        quality_rms_threshold: Event-level quality rejection threshold.
+        trigger_sigma: Trigger threshold multiplier.
+        slope_threshold: Minimum falling slope.
+        dead_time_samples: Dead time between afterpulses.
+
+    Returns:
+        Updated dict mapping (board, channel) -> list of AfterpulseRecord.
+    """
+    # Run noise-suppressed search on noisy channels only
+    noise_suppressed = find_afterpulses_with_noise_suppression(
+        bundle=bundle,
+        main_pulses_by_ch=main_pulses_by_ch,
+        noisy_channels=noisy_channels,
+        noise_results=noise_results,
+        amplitude_threshold=amplitude_threshold,
+        afterpulse_min_interval=afterpulse_min_interval,
+        quality_rms_threshold=quality_rms_threshold,
+        median_window_size=median_window_size,
+        trigger_sigma=trigger_sigma,
+        slope_threshold=slope_threshold,
+        dead_time_samples=dead_time_samples,
+    )
+
+    # Merge: keep clean channels unchanged, replace noisy channels
+    merged: Dict[Tuple[int, int], List[AfterpulseRecord]] = {}
+    for ch_key, aps in raw_afterpulses_by_ch.items():
+        _, ch = ch_key
+        if ch in noisy_channels:
+            # Use noise-suppressed results if available, else empty
+            merged[ch_key] = noise_suppressed.get(ch_key, [])
+        else:
+            merged[ch_key] = aps
+
+    # Ensure all noisy channels appear (even if empty)
+    for ch_key, aps in noise_suppressed.items():
+        if ch_key not in merged:
+            merged[ch_key] = aps
+
+    return merged
