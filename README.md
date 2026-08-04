@@ -21,7 +21,9 @@ pipeline.analyze_runs()
   │     analysis.dark_count.analyze_dark_count()
   │
   ├── IF "spe gain" in datatype:
-  │     analysis.gain.analyze_gain()
+  │     analysis.gain.analyze_gain()            # --fit-model selects the fit
+  │       └── gain_fit_models.fit_spectrum()    # single_fit / multi_gauss_fit / poisson_fit
+  │       └── plotting.plot_spe_gain_fit_overlay()  # run{id}_multi_gauss_fit.png (all channels)
   │
   ├── IF "after pulse" in datatype:
   │     analysis.app.analyze_app()
@@ -75,9 +77,28 @@ pmt-analysis analyze --run-id 00305
 # Multiple runs
 pmt-analysis analyze --run-id 00305 00306 --output-dir output
 
+# Select the SPE gain spectrum fit model (default: multi_gauss_fit)
+pmt-analysis analyze --run-id 00305 --fit-model multi_gauss_fit
+pmt-analysis analyze --run-id 00305 --fit-model single_fit
+pmt-analysis analyze --run-id 00305 --fit-model poisson_fit
+
 # With database write
 pmt-analysis analyze --run-id 00305 --write-db
+
+# Also runnable as a python module
+python -m pmt_analysis.cli analyze --run-id 00350 --fit-model multi_gauss_fit
 ```
+
+### SPE gain fit models
+
+| `--fit-model` | Description | Default |
+|---------------|-------------|---------|
+| `multi_gauss_fit` | Pedestal + 1/2/3-PE Gaussians (Poisson-deviance least squares) | ✅ yes |
+| `single_fit` | Single Gaussian peak fit (SPE peak only) | no |
+| `poisson_fit` | Gaussian-convolved Poisson (amplitudes tied by a single `mu_pe`) | no |
+
+The fit models live in `src/pmt_analysis/analysis/gain_fit_models.py` and are
+selected via `analyze_gain(..., fit_model=...)` or the `--fit-model` CLI flag.
 
 ## Analysis Algorithms
 
@@ -121,27 +142,37 @@ pmt-analysis analyze --run-id 00305 --write-db
 
 2. **Data Processing**:
    - Baseline correction: Mean of first 30 samples
-   - RMS filtering: Skip waveforms with baseline RMS > 4
-   - Integration window: Sample 97 ± 10 (20-sample window)
+   - RMS filtering: Skip waveforms with baseline RMS > threshold
+   - Integration window: `center_idx = 95`, `win_left = 5`, `win_right = 5` → samples `[90:100]`
+     (centered on the true PMT pulse peak, which sits at ~sample 93)
    - Charge calculation: `raw_area = -sum(window - baseline)`, `area_pe = raw_area * pe_fact`
 
-3. **Fitting Model**:
-   Single Gaussian fit:
-   ```
-   f(x) = amp * exp(-0.5 * ((x - mu) / sigma)^2)
-   ```
-   - Fit range: (5, 20) PE
-   - Initial guess: mu=10.0, sigma=2.0
-   - Bounds: mu ∈ [0.1, 30], sigma ∈ [0, 12], amp ∈ [100, 1e5]
+3. **Fitting Models** (`src/pmt_analysis/analysis/gain_fit_models.py`):
+   The SPE charge spectrum is fit with a switchable model. Each model returns
+   a common result dict: `gain, gain_error, sigma, sigma_error, amplitude,
+   amplitude_error, resolution, params, errors, x, counts, edges`.
+
+   - **`multi_gauss_fit` (default)**: pedestal + 1/2/3-PE Gaussians. Peak centers
+     at `mu0 + n*gain`, widths `sqrt(sigma0^2 + n*sigma1^2)`, independent
+     amplitudes. Fit via Poisson-deviance least squares over several gain seeds.
+   - **`single_fit`**: single Gaussian peak fit on the SPE peak.
+   - **`poisson_fit`**: Gaussian-convolved Poisson
+     `sum_k Pois(k|mu_pe)·Gauss(x; mu0 + k*gain, sqrt(sigma0^2 + k*sigma1^2))`.
+     All peak amplitudes are tied to a single `mu_pe` (fewest parameters).
+
+   The selected model is recorded on each channel's `GainFitResult.fit_model`.
 
 4. **Gain Definition**:
-   **Gain = mu** (SPE peak position from Gaussian fit)
+   **Gain = mu** (SPE peak position) from the fit `gain` parameter, in PE units.
 
 **Output Fields**:
 - `gain_value`: SPE peak position (mu) in PE units
 - `gain_error`: Uncertainty on gain_value
-- `sigma`: Gaussian width
+- `sigma`: SPE peak width
+- `resolution`: `sigma / gain`
 - `sample_count`: Number of valid waveforms used
+- `fit_model`: which fit model was used
+- `fit_parameters` / `raw_params` / `raw_errors`: fit parameters for reconstruction
 
 ### 3. Afterpulse Probability (APP) Analysis
 
@@ -258,8 +289,10 @@ Per-channel data files containing:
 | `DEFAULT_AFTERPULSE_MIN_INTERVAL` | `35` samples | `app.py` |
 | `DEFAULT_MIN_INTERVAL_BETWEEN_PULSES` | `10` samples | `app.py` |
 | Default asymmetry threshold | `0.7` | `dark_count.py` |
-| Default fit range (gain) | `(5, 20)` PE | `gain.py` |
-| Default RMS threshold (gain) | `4.0` | `gain.py` |
+| Default gain fit model | `multi_gauss_fit` | `gain.py` / `gain_fit_models.py` |
+| Default integration center (`center_idx`) | `95` (window `[90:100]`) | `gain.py` |
+| Default gain fit bins / range | `120` / `(-10, 80)` | `gain_fit_models.py` |
+| Default RMS threshold (gain) | `50.0` | `gain.py` |
 
 ## Database Schema
 
@@ -286,6 +319,7 @@ For run 00305, the analysis generates:
 ```
 output/
 ├── run00305_waveform_overlay.png              # Waveform overlay
+├── run00305_multi_gauss_fit.png               # SPE gain multi-Gaussian fit (all channels, grid), one per run
 ├── run00305_afterpulse_2d_ch[0-6].png         # 2D histograms per channel
 ├── run00305_afterpulse_delta_time_all.png     # Delta time distribution (3x3 grid)
 ├── run00305_main_pulse_area_all.png           # Main pulse area distribution (3x3 grid)
@@ -294,3 +328,10 @@ output/
 ├── run00305_{pmt_id}_ch[0-6].npz              # Per-channel data files
 └── run00305_all_channels.npz                  # Combined all-channel data
 ```
+
+> For SPE Gain runs, the gain figure is `run{run_id}_multi_gauss_fit.png`: a
+> grid of subplots (one per channel) showing the charge histogram, the total
+> multi-Gaussian fit, and the individual pedestal / 1-PE / 2-PE Gaussian
+> components as colored dashed lines, with a legend of key fit parameters
+> (mu / sigma / resolution). The legacy `spe_gain_validation.png` and
+> `area_histogram.png` outputs are no longer generated for SPE Gain runs.

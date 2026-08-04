@@ -341,21 +341,27 @@ def plot_spe_gain_fit_overlay(
     run_id: str | int,
     pmt_id_map: Optional[Dict[Tuple[int, int], str]] = None,
     log_y: bool = True,
+    ncols: int = 3,
+    nrows: int = 2,
 ) -> List[str]:
-    """Generate a per-channel SPE gain fit plot for each channel.
+    """Generate a single multi-Gaussian SPE gain fit figure per run.
 
-    For every channel a dedicated figure is saved showing the charge
-    histogram, the fitted model curve (reconstructed from the ``GainFitResult``
-    fields), and (when available) a deviance-residual panel.  This makes the
-    fit visible for whichever model was used (``single_fit``,
-    ``multi_gauss_fit``, or ``poisson_fit``).
+    Draws one ``<run_id>_multi_gauss_fit.png`` figure containing a grid of
+    subplots (default 2 rows x 3 columns), one subplot per channel.  Each
+    subplot shows the charge histogram, the total multi-Gaussian fit, and the
+    individual pedestal / single-PE / double-PE Gaussian components as colored
+    dashed lines, with a legend and a text box of key fit parameters
+    (mu / sigma / resolution / reduced deviance).  Styling follows
+    ``example_code/compare_gain_fits_00296.ipynb``.
 
     Args:
         result: GainAnalysisResult from analyze_gain()
-        output_dir: Directory to save the plots
+        output_dir: Directory to save the plot
         run_id: Run ID for filename and title
         pmt_id_map: Optional {(board, channel): pmt_id} mapping for labels
         log_y: Whether to use a log-scaled y-axis (default True)
+        ncols: Number of subplot columns (default 3)
+        nrows: Number of subplot rows (default 2); auto-expanded to fit all channels
 
     Returns:
         List of saved file paths (empty on total failure)
@@ -369,77 +375,112 @@ def plot_spe_gain_fit_overlay(
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
 
-    saved = []
+    channels = [c for c in result.channels if c.histogram_counts is not None]
+    if not channels:
+        return []
 
-    for ch_f in result.channels:
-        counts = ch_f.histogram_counts
-        edges = ch_f.histogram_edges
-        if counts is None or edges is None or len(counts) == 0:
-            continue
+    n_ch = len(channels)
+    ncols_f = max(1, ncols)
+    nrows_f = max(nrows, (n_ch + ncols_f - 1) // ncols_f)
 
-        pmt_id = "?"
-        if pmt_id_map:
-            pmt_id = pmt_id_map.get((ch_f.board, ch_f.channel), "?")
-        model = ch_f.fit_model or "multi_gauss_fit"
+    fig, axes = plt.subplots(
+        nrows_f, ncols_f,
+        figsize=(4.6 * ncols_f, 4.0 * nrows_f),
+        squeeze=False,
+    )
+    fig.suptitle(f"Run {run_id} — SPE Gain multi-Gaussian fit", fontsize=13)
 
-        fig, (ax, axr) = plt.subplots(
-            2, 1, figsize=(9, 6), sharex=True,
-            gridspec_kw={"height_ratios": [3, 1], "hspace": 0.08},
-        )
+    comp_styles = [
+        ("0 PE (pedestal)", "tab:blue"),
+        ("1 PE (single)", "tab:green"),
+        ("2 PE (double)", "tab:orange"),
+        ("3 PE (triple)", "tab:purple"),
+    ]
 
+    for idx, ch_f in enumerate(channels):
+        row, col = idx // ncols_f, idx % ncols_f
+        ax = axes[row][col]
+
+        counts = np.asarray(ch_f.histogram_counts)
+        edges = np.asarray(ch_f.histogram_edges)
         x = 0.5 * (edges[:-1] + edges[1:])
+
         ax.stairs(counts, edges, color="black", lw=1, label="data")
 
-        if ch_f.fit_success and ch_f.fit_curve_y is not None and ch_f.fit_curve_x is not None:
-            ax.plot(ch_f.fit_curve_x, ch_f.fit_curve_y, "r-", lw=1.8,
-                    label=f"{model} fit")
-        elif ch_f.fit_success and ch_f.fit_parameters:
-            # Fallback: draw the model curve via fit_spectrum reconstruction.
-            try:
-                params = ch_f.raw_params
-                from pmt_analysis.analysis.gain import _reconstruct_curve
-                cx, cy = _reconstruct_curve(model, params, counts, edges)
-                if cx is not None and cy is not None:
-                    ax.plot(cx, cy, "r-", lw=1.8, label=f"{model} fit")
-            except Exception:
-                pass
+        pmt_id = pmt_id_map.get((ch_f.board, ch_f.channel), "?") if pmt_id_map else "?"
 
-        if log_y and np.any(np.asarray(counts) > 0):
-            ax.set_yscale("log")
-            ax.set_ylim(0.7, max(float(counts.max()) * 1.8, 2.0))
-        ax.set_ylabel("Counts")
+        if ch_f.fit_success and ch_f.raw_params is not None and len(ch_f.raw_params) >= 7:
+            p = ch_f.raw_params
+            A0, mu0, sigma0, A1, gain, sigma1, A2 = p[0], p[1], p[2], p[3], p[4], p[5], p[6]
+            A3 = p[7] if len(p) >= 8 else 0.0
 
-        status = "fit failed" if not ch_f.fit_success else f"gain={ch_f.gain_value:.3f} ± {ch_f.gain_error:.3f}" if ch_f.gain_value is not None else "fit ok"
-        ax.set_title(
-            f"run {run_id} — CH{ch_f.channel} ({pmt_id}) — {model}\n"
-            f"{status}"
-            + (f"  sigma={ch_f.sigma:.3f}  res={ch_f.resolution:.3f}" if ch_f.resolution is not None else "")
-        )
-        ax.legend(fontsize=8)
+            # Total fit curve on a fine grid
+            xf = np.linspace(x[0], x[-1], 600)
+            from pmt_analysis.analysis.gain_fit_models import four_gauss
+            total = four_gauss(xf, *p)
+            ax.plot(xf, total, color="tab:red", lw=2, label="total fit")
 
-        # Residual panel
-        axr.axhline(0, color="black", lw=0.8)
-        base_y = ch_f.fit_curve_y if ch_f.fit_curve_y is not None else counts.astype(float) * 0
-        try:
-            from pmt_analysis.analysis.gain_fit_models import _poisson_deviance_residual
-            resid = _poisson_deviance_residual(np.asarray(counts), np.asarray(base_y))
-            axr.plot(x, resid, ".", ms=3, color="tab:blue")
-            axr.set_ylabel("Dev res")
-        except Exception:
-            axr.text(0.5, 0.5, "n/a", transform=axr.transAxes, ha="center", va="center")
-            axr.set_ylabel("Dev res")
-        axr.set_xlabel("Charge [10^6 e^-]")
+            # Individual Gaussian components (colored dashed lines)
+            comps = [
+                (A0, mu0, 0.0, sigma0),
+                (A1, mu0 + gain, sigma0, sigma1),
+                (A2, mu0 + 2 * gain, sigma0, np.sqrt(2) * sigma1),
+                (A3, mu0 + 3 * gain, sigma0, np.sqrt(3) * sigma1),
+            ]
+            for (A, mu_c, s0, s1), (cname, ccolor) in zip(comps, comp_styles):
+                if A <= 0:
+                    continue
+                # pedestal has width sigma0; n-PE widths grow as sqrt(sigma0^2 + n*sigma1^2)
+                if cname.startswith("0 PE"):
+                    w = sigma0
+                    yc = A * np.exp(-0.5 * ((xf - mu_c) / w) ** 2)
+                else:
+                    n_pe = int(cname.split(" ")[0])
+                    w = np.sqrt(sigma0 ** 2 + n_pe * sigma1 ** 2)
+                    yc = A * np.exp(-0.5 * ((xf - mu_c) / w) ** 2)
+                if np.max(yc) >= 0.5:
+                    ax.plot(xf, yc, "--", lw=1.2, color=ccolor, label=cname)
 
-        if np.any(np.asarray(counts) > 0):
-            fig.tight_layout()
-        filename = f"run{run_id}_ch{ch_f.channel:02d}_pmt{pmt_id}_{model}.png"
-        filepath = out / filename
-        fig.savefig(str(filepath), dpi=150, bbox_inches="tight")
-        plt.close(fig)
-        saved.append(str(filepath))
-        logger.info("SPE gain fit overlay plot saved: %s", filepath)
+            if log_y and np.any(counts > 0):
+                ax.set_yscale("log")
+                ax.set_ylim(0.7, max(float(counts.max()) * 1.8, 2.0))
 
-    return saved
+            # Legend + parameter text box (notebook style)
+            leg_text = (
+                f"mu = {gain:.3f} ± {ch_f.gain_error:.3f}\n"
+                f"sigma = {sigma1:.3f} ± {ch_f.sigma_error:.3f}\n"
+                f"resolution = {ch_f.resolution:.3f}" if ch_f.resolution is not None
+                else f"mu = {gain:.3f}\nsigma = {sigma1:.3f}"
+            )
+            ax.text(
+                0.98, 0.96, leg_text,
+                transform=ax.transAxes, ha="right", va="top",
+                bbox=dict(boxstyle="round", facecolor="white", alpha=0.85),
+                fontsize=8,
+            )
+        else:
+            ax.text(0.5, 0.5, "fit failed",
+                    transform=ax.transAxes, ha="center", va="center", fontsize=10)
+
+        ax.set_title(f"CH{ch_f.channel} ({pmt_id})", fontsize=9)
+        ax.set_xlabel("Charge [10^6 e^-]", fontsize=7)
+        ax.set_ylabel("Counts", fontsize=7)
+        ax.tick_params(labelsize=7)
+        if ch_f.fit_success:
+            ax.legend(ncol=2, fontsize=6, loc="upper left")
+
+    # Hide unused subplots
+    for idx in range(n_ch, nrows_f * ncols_f):
+        row, col = idx // ncols_f, idx % ncols_f
+        axes[row][col].set_visible(False)
+
+    fig.tight_layout(rect=[0, 0, 1, 0.95])
+    filename = f"run{run_id}_multi_gauss_fit.png"
+    filepath = out / filename
+    fig.savefig(str(filepath), dpi=200, bbox_inches="tight")
+    plt.close(fig)
+    logger.info("SPE gain multi-Gaussian fit plot saved: %s", filepath)
+    return [str(filepath)]
 
 
 def plot_waveform_overlay(
@@ -448,7 +489,7 @@ def plot_waveform_overlay(
     run_id: str | int,
     board: int = 0,
     n_waveforms: int = 100,
-    int_center: int = 110,
+    int_center: int = 95,
     int_left: int = 5,
     int_right: int = 5,
     x_range: Optional[Tuple[int, int]] = None,
@@ -465,7 +506,7 @@ def plot_waveform_overlay(
         run_id: Run ID for filename and title
         board: Board number to plot (default 0)
         n_waveforms: Number of waveforms per channel to overlay (default 100)
-        int_center: Center sample index for integration window (default 110)
+        int_center: Center sample index for integration window (default 95)
         int_left: Left half-width of integration window (default 5)
         int_right: Right half-width of integration window (default 5)
         x_range: Optional (start, end) sample range to display on x-axis
@@ -562,7 +603,7 @@ def plot_area_histogram(
     run_id: str | int,
     board: int = 0,
     n_waveforms: int = 300000,
-    center_idx: int = 110,
+    center_idx: int = 95,
     win_left: int = 5,
     win_right: int = 5,
     n_bins: int = 50,
@@ -695,7 +736,7 @@ def plot_filtered_waveform_overlay(
     run_id: str | int,
     board: int = 0,
     n_waveforms: int = 100,
-    int_center: int = 110,
+    int_center: int = 95,
     int_left: int = 5,
     int_right: int = 5,
     x_range: Optional[Tuple[int, int]] = None,
@@ -715,7 +756,7 @@ def plot_filtered_waveform_overlay(
         run_id: Run ID for filename and title
         board: Board number to plot (default 0)
         n_waveforms: Number of waveforms per channel to overlay (default 100)
-        int_center: Center sample index for integration window (default 110)
+        int_center: Center sample index for integration window (default 95)
         int_left: Left half-width of integration window (default 5)
         int_right: Right half-width of integration window (default 5)
         x_range: Optional (start, end) sample range to display on x-axis

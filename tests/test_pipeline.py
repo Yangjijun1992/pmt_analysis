@@ -77,7 +77,7 @@ class TestAnalyzeRuns:
             with patch("pmt_analysis.pipeline.get_runinfo", return_value=ri), \
                  patch("pmt_analysis.pipeline.NotebookBasedRawDataReader") as MockReader, \
                  patch("pmt_analysis.pipeline.plot_dark_count_validation") as mock_dcr_plot, \
-                 patch("pmt_analysis.pipeline.plot_spe_gain_validation") as mock_gain_plot, \
+                 patch("pmt_analysis.pipeline.plot_spe_gain_fit_overlay") as mock_gain_plot, \
                  patch("pmt_analysis.pipeline.write_analysis_results"):
 
                 MockReader.return_value.read.return_value = bundle
@@ -96,7 +96,7 @@ class TestAnalyzeRuns:
             with patch("pmt_analysis.pipeline.get_runinfo", return_value=ri), \
                  patch("pmt_analysis.pipeline.NotebookBasedRawDataReader") as MockReader, \
                  patch("pmt_analysis.pipeline.plot_dark_count_validation", return_value="/fake/plot.png") as mock_dcr_plot, \
-                 patch("pmt_analysis.pipeline.plot_spe_gain_validation", return_value="/fake/gain.png") as mock_gain_plot, \
+                 patch("pmt_analysis.pipeline.plot_spe_gain_fit_overlay", return_value=["/fake/gain.png"]) as mock_gain_plot, \
                  patch("pmt_analysis.pipeline.write_analysis_results"):
 
                 MockReader.return_value.read.return_value = bundle

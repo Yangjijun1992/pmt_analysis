@@ -1,8 +1,6 @@
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
-import numpy as np
-
 from pmt_analysis.analysis.app import (
     analyze_app,
     print_main_pulse_summary,
@@ -21,13 +19,11 @@ from pmt_analysis.db.writer import write_analysis_results
 from pmt_analysis.io.raw_reader import NotebookBasedRawDataReader
 from pmt_analysis.models import RunInfo
 from pmt_analysis.plotting.validation import (
-    plot_area_histogram,
     plot_dark_count_baseline_2d,
     plot_dark_count_noise_diagnostics_2d,
     plot_dark_count_validation,
     plot_filtered_waveform_overlay,
     plot_spe_gain_fit_overlay,
-    plot_spe_gain_validation,
     plot_waveform_overlay,
 )
 from pmt_analysis.runinfo import get_runinfo
@@ -325,25 +321,7 @@ def analyze_runs(
                         print(f"[run_id={ri.run_id}]   noise_diag_2d plot: {noise_2d_plot}")
 
                 if gain_result is not None:
-                    hist_dict: Dict[int, Tuple[np.ndarray, np.ndarray]] = {}
-                    params_dict: Dict[int, Dict[str, float]] = {}
-                    for ch_f in gain_result.channels:
-                        if ch_f.histogram_counts is not None and ch_f.histogram_edges is not None:
-                            hist_dict[ch_f.channel] = (ch_f.histogram_counts, ch_f.histogram_edges)
-                        if ch_f.fit_success and ch_f.fit_parameters:
-                            params_dict[ch_f.channel] = ch_f.fit_parameters
-
-                    gain_plot = plot_spe_gain_validation(
-                        result=gain_result,
-                        output_dir=output_path,
-                        run_id=ri.run_id,
-                        histogram_counts=hist_dict or None,
-                        fit_params=params_dict or None,
-                    )
-                    if gain_plot:
-                        run_plot_paths.append(gain_plot)
-                        print(f"[run_id={ri.run_id}]   spe_gain plot: {gain_plot}")
-
+                    # Single multi-Gaussian fit figure per run (all channels in a grid).
                     fit_files = plot_spe_gain_fit_overlay(
                         result=gain_result,
                         output_dir=output_path,
@@ -352,20 +330,7 @@ def analyze_runs(
                     )
                     for f in fit_files:
                         run_plot_paths.append(f)
-                        print(f"[run_id={ri.run_id}]   spe_gain fit overlay: {f}")
-
-                    area_plot = plot_area_histogram(
-                        bundle=bundle,
-                        output_dir=output_path,
-                        run_id=ri.run_id,
-                        histogram_counts=hist_dict or None,
-                        fit_params=params_dict or None,
-                        hist_range=(-10.0, 40.0),
-                        n_bins=100,
-                    )
-                    if area_plot:
-                        run_plot_paths.append(area_plot)
-                        print(f"[run_id={ri.run_id}]   area histogram plot: {area_plot}")
+                        print(f"[run_id={ri.run_id}]   spe_gain multi Gauss fit: {f}")
 
                 all_plot_paths.extend(run_plot_paths)
                 print()
