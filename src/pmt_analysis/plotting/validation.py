@@ -335,6 +335,113 @@ def plot_spe_gain_validation(
         return None
 
 
+def plot_spe_gain_fit_overlay(
+    result: GainAnalysisResult,
+    output_dir: str | Path,
+    run_id: str | int,
+    pmt_id_map: Optional[Dict[Tuple[int, int], str]] = None,
+    log_y: bool = True,
+) -> List[str]:
+    """Generate a per-channel SPE gain fit plot for each channel.
+
+    For every channel a dedicated figure is saved showing the charge
+    histogram, the fitted model curve (reconstructed from the ``GainFitResult``
+    fields), and (when available) a deviance-residual panel.  This makes the
+    fit visible for whichever model was used (``single_fit``,
+    ``multi_gauss_fit``, or ``poisson_fit``).
+
+    Args:
+        result: GainAnalysisResult from analyze_gain()
+        output_dir: Directory to save the plots
+        run_id: Run ID for filename and title
+        pmt_id_map: Optional {(board, channel): pmt_id} mapping for labels
+        log_y: Whether to use a log-scaled y-axis (default True)
+
+    Returns:
+        List of saved file paths (empty on total failure)
+    """
+    try:
+        plt = _ensure_matplotlib()
+    except ImportError as e:
+        logger.warning("Skipping SPE gain fit overlay plots: %s", e)
+        return []
+
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+
+    saved = []
+
+    for ch_f in result.channels:
+        counts = ch_f.histogram_counts
+        edges = ch_f.histogram_edges
+        if counts is None or edges is None or len(counts) == 0:
+            continue
+
+        pmt_id = "?"
+        if pmt_id_map:
+            pmt_id = pmt_id_map.get((ch_f.board, ch_f.channel), "?")
+        model = ch_f.fit_model or "multi_gauss_fit"
+
+        fig, (ax, axr) = plt.subplots(
+            2, 1, figsize=(9, 6), sharex=True,
+            gridspec_kw={"height_ratios": [3, 1], "hspace": 0.08},
+        )
+
+        x = 0.5 * (edges[:-1] + edges[1:])
+        ax.stairs(counts, edges, color="black", lw=1, label="data")
+
+        if ch_f.fit_success and ch_f.fit_curve_y is not None and ch_f.fit_curve_x is not None:
+            ax.plot(ch_f.fit_curve_x, ch_f.fit_curve_y, "r-", lw=1.8,
+                    label=f"{model} fit")
+        elif ch_f.fit_success and ch_f.fit_parameters:
+            # Fallback: draw the model curve via fit_spectrum reconstruction.
+            try:
+                params = ch_f.raw_params
+                from pmt_analysis.analysis.gain import _reconstruct_curve
+                cx, cy = _reconstruct_curve(model, params, counts, edges)
+                if cx is not None and cy is not None:
+                    ax.plot(cx, cy, "r-", lw=1.8, label=f"{model} fit")
+            except Exception:
+                pass
+
+        if log_y and np.any(np.asarray(counts) > 0):
+            ax.set_yscale("log")
+            ax.set_ylim(0.7, max(float(counts.max()) * 1.8, 2.0))
+        ax.set_ylabel("Counts")
+
+        status = "fit failed" if not ch_f.fit_success else f"gain={ch_f.gain_value:.3f} ± {ch_f.gain_error:.3f}" if ch_f.gain_value is not None else "fit ok"
+        ax.set_title(
+            f"run {run_id} — CH{ch_f.channel} ({pmt_id}) — {model}\n"
+            f"{status}"
+            + (f"  sigma={ch_f.sigma:.3f}  res={ch_f.resolution:.3f}" if ch_f.resolution is not None else "")
+        )
+        ax.legend(fontsize=8)
+
+        # Residual panel
+        axr.axhline(0, color="black", lw=0.8)
+        base_y = ch_f.fit_curve_y if ch_f.fit_curve_y is not None else counts.astype(float) * 0
+        try:
+            from pmt_analysis.analysis.gain_fit_models import _poisson_deviance_residual
+            resid = _poisson_deviance_residual(np.asarray(counts), np.asarray(base_y))
+            axr.plot(x, resid, ".", ms=3, color="tab:blue")
+            axr.set_ylabel("Dev res")
+        except Exception:
+            axr.text(0.5, 0.5, "n/a", transform=axr.transAxes, ha="center", va="center")
+            axr.set_ylabel("Dev res")
+        axr.set_xlabel("Charge [10^6 e^-]")
+
+        if np.any(np.asarray(counts) > 0):
+            fig.tight_layout()
+        filename = f"run{run_id}_ch{ch_f.channel:02d}_pmt{pmt_id}_{model}.png"
+        filepath = out / filename
+        fig.savefig(str(filepath), dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        saved.append(str(filepath))
+        logger.info("SPE gain fit overlay plot saved: %s", filepath)
+
+    return saved
+
+
 def plot_waveform_overlay(
     bundle: Any,
     output_dir: str | Path,

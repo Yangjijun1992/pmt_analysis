@@ -45,6 +45,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print a concise summary table after analysis",
     )
     analyze_parser.add_argument(
+        "--fit-model",
+        type=str,
+        default="multi_gauss_fit",
+        choices=["single_fit", "multi_gauss_fit", "poisson_fit"],
+        help="SPE gain spectrum fit model (default: multi_gauss_fit)",
+    )
+    analyze_parser.add_argument(
         "--write-db",
         action="store_true",
         default=False,
@@ -89,9 +96,14 @@ def main() -> None:
                 data_root=args.data_root,
                 save_plots=save_plots,
                 write_db=args.write_db,
+                fit_model=args.fit_model,
                 github_user=args.github_user,
                 github_token=args.github_token,
             )
         )
 
     parser.error(f"Unsupported command: {args.command}")
+
+
+if __name__ == "__main__":
+    main()

@@ -26,6 +26,7 @@ from pmt_analysis.plotting.validation import (
     plot_dark_count_noise_diagnostics_2d,
     plot_dark_count_validation,
     plot_filtered_waveform_overlay,
+    plot_spe_gain_fit_overlay,
     plot_spe_gain_validation,
     plot_waveform_overlay,
 )
@@ -45,6 +46,7 @@ def analyze_runs(
     data_root: str = DEFAULT_TPC_DATA_ROOT,
     save_plots: bool = True,
     write_db: bool = False,
+    fit_model: str = "multi_gauss_fit",
     github_user: str = "",
     github_token: str = "",
 ) -> int:
@@ -57,6 +59,7 @@ def analyze_runs(
     print(f"TPC data root: {data_root}")
     print(f"Save plots: {save_plots}")
     print(f"Write DB: {write_db}")
+    print(f"SPE gain fit model: {fit_model}")
     if write_db:
         print(f"Database path: {DEFAULT_DB_PATH}")
     print()
@@ -176,7 +179,7 @@ def analyze_runs(
             gain_result = None
             if "spe gain" in dt_set:
                 print(f"[run_id={ri.run_id}] Running SPE gain analysis...")
-                gain_result = analyze_gain(bundle)
+                gain_result = analyze_gain(bundle, fit_model=fit_model)
                 print(f"[run_id={ri.run_id}] SPE Gain Analysis Results:")
                 for ch_result in gain_result.channels:
                     pmt_id = pmt_id_map.get((ch_result.board, ch_result.channel), "?")
@@ -340,6 +343,16 @@ def analyze_runs(
                     if gain_plot:
                         run_plot_paths.append(gain_plot)
                         print(f"[run_id={ri.run_id}]   spe_gain plot: {gain_plot}")
+
+                    fit_files = plot_spe_gain_fit_overlay(
+                        result=gain_result,
+                        output_dir=output_path,
+                        run_id=ri.run_id,
+                        pmt_id_map=pmt_id_map or None,
+                    )
+                    for f in fit_files:
+                        run_plot_paths.append(f)
+                        print(f"[run_id={ri.run_id}]   spe_gain fit overlay: {f}")
 
                     area_plot = plot_area_histogram(
                         bundle=bundle,

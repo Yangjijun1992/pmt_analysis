@@ -33,6 +33,11 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
+from pmt_analysis.analysis.gain_fit_models import (
+    DEFAULT_FIT_MODEL,
+    FIT_MODELS,
+    fit_spectrum,
+)
 from pmt_analysis.io.raw_reader import RawDataBundle
 
 # PE conversion factor from notebook
@@ -70,6 +75,12 @@ class GainFitResult:
     fit_parameters: Dict[str, float] = field(default_factory=dict)
     histogram_counts: Optional[np.ndarray] = None
     histogram_edges: Optional[np.ndarray] = None
+    fit_model: str = DEFAULT_FIT_MODEL
+    resolution: Optional[float] = None
+    fit_curve_x: Optional[np.ndarray] = None
+    fit_curve_y: Optional[np.ndarray] = None
+    raw_params: Optional[np.ndarray] = None
+    raw_errors: Optional[np.ndarray] = None
 
 
 @dataclass
@@ -279,11 +290,44 @@ def compute_gain_value(fit_result: GainFitResult) -> Optional[float]:
     return fit_result.gain_value
 
 
+def _reconstruct_curve(
+    model: str,
+    params: np.ndarray,
+    counts: np.ndarray,
+    edges: np.ndarray,
+    kmax: int = 30,
+) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+    """Rebuild the fitted model curve over the histogram bin centers.
+
+    Returns ``(x, curve_y)`` or ``(None, None)`` if curve reconstruction fails.
+    """
+    if params is None or len(params) == 0:
+        return None, None
+    try:
+        x = 0.5 * (edges[:-1] + edges[1:])
+        if model == "single_fit":
+            amp, mu, sigma = params
+            y = amp * np.exp(-0.5 * ((x - mu) / sigma) ** 2)
+        elif model == "multi_gauss_fit":
+            from pmt_analysis.analysis.gain_fit_models import four_gauss
+            y = four_gauss(x, *params)
+        elif model == "poisson_fit":
+            from pmt_analysis.analysis.gain_fit_models import gauss_poisson
+            y = gauss_poisson(x, *params, kmax=kmax)
+        else:
+            return None, None
+        return x.astype(float), np.asarray(y, dtype=float)
+    except Exception:
+        return None, None
+
+
 def analyze_gain(
     bundle: RawDataBundle,
     board: int = 0,
     channels: Optional[List[int]] = None,
     n_waveforms: int = 300000,
+    fit_model: str = DEFAULT_FIT_MODEL,
+    **model_kwargs,
 ) -> GainAnalysisResult:
     """Perform complete SPE gain analysis on a RawDataBundle.
 
@@ -294,10 +338,19 @@ def analyze_gain(
         board: Board ID to analyze
         channels: List of channel IDs (default: auto-detect from data)
         n_waveforms: Max waveforms per channel
+        fit_model: One of "single_fit", "multi_gauss_fit", "poisson_fit".
+            Defaults to "multi_gauss_fit".
+        **model_kwargs: Extra keywords forwarded to the selected fit model
+            (e.g. bins, hist_range, n_peaks, kmax).
 
     Returns:
         GainAnalysisResult with fit results for each channel
     """
+    if fit_model not in FIT_MODELS:
+        raise ValueError(
+            f"Unknown fit_model {fit_model!r}. Choose from {sorted(FIT_MODELS)}"
+        )
+
     rv = bundle.data
     records = rv.records
 
@@ -320,23 +373,49 @@ def analyze_gain(
         samples = samples_per_ch.get(ch, [])
 
         if len(samples) < 10:
+            counts, edges = build_spe_histogram(samples)
             channel_results.append(
                 GainFitResult(
                     board=board,
                     channel=ch,
                     fit_success=False,
                     sample_count=len(samples),
+                    fit_model=fit_model,
+                    histogram_counts=counts,
+                    histogram_edges=edges,
                 )
             )
             continue
 
-        # Build histogram
-        counts, edges = build_spe_histogram(samples)
+        # Raw area_pe values (in PE units)
+        values = np.array([s.area_pe for s in samples], dtype=float)
 
-        # Fit SPE spectrum
-        params, errors = fit_spe_spectrum(counts, edges)
+        # Fit SPE spectrum with the selected model
+        try:
+            result = fit_spectrum(values, fit_model=fit_model, **model_kwargs)
+        except Exception:
+            result = None
 
-        if params is not None and errors is not None:
+        if result is not None and np.isfinite(result.get("gain", np.nan)):
+            params = {
+                "mu": float(result["gain"]),
+                "sigma": float(result["sigma"]),
+                "amp": float(result["amplitude"]),
+                "model": fit_model,
+                "resolution": result.get("resolution"),
+            }
+            errors = {
+                "mu": float(result["gain_error"]),
+                "sigma": float(result["sigma_error"]),
+                "amp": float(result["amplitude_error"]),
+            }
+            counts = np.asarray(result["counts"])
+            edges = np.asarray(result["edges"])
+            raw_params = result.get("params")
+            raw_errors = result.get("errors")
+            curve_x, curve_y = _reconstruct_curve(
+                fit_model, raw_params, counts, edges, kmax=model_kwargs.get("kmax", 30)
+            )
             channel_results.append(
                 GainFitResult(
                     board=board,
@@ -352,15 +431,24 @@ def analyze_gain(
                     fit_parameters=params,
                     histogram_counts=counts,
                     histogram_edges=edges,
+                    fit_model=fit_model,
+                    resolution=result.get("resolution"),
+                    fit_curve_x=curve_x,
+                    fit_curve_y=curve_y,
+                    raw_params=raw_params,
+                    raw_errors=raw_errors,
                 )
             )
         else:
+            # On fit failure still store the histogram for diagnostics/plotting.
+            counts, edges = build_spe_histogram(samples)
             channel_results.append(
                 GainFitResult(
                     board=board,
                     channel=ch,
                     fit_success=False,
                     sample_count=len(samples),
+                    fit_model=fit_model,
                     histogram_counts=counts,
                     histogram_edges=edges,
                 )
@@ -372,5 +460,6 @@ def analyze_gain(
             "run_id": bundle.runinfo.run_id,
             "runtype": bundle.runinfo.runtype,
             "board": board,
+            "fit_model": fit_model,
         },
     )
