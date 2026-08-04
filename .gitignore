@@ -7,6 +7,8 @@ __pycache__/
 dist/
 build/
 docs/
+example_code/compare_gain_fits_00296.ipynb
+example_code/fit_package.py
 .eggs/
 
 # Backup files
