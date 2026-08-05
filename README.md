@@ -335,3 +335,39 @@ output/
 > components as colored dashed lines, with a legend of key fit parameters
 > (mu / sigma / resolution). The legacy `spe_gain_validation.png` and
 > `area_histogram.png` outputs are no longer generated for SPE Gain runs.
+
+## Afterpulse Probability in a Time Window (`scripts/app_1us_from_npz.py`)
+
+A standalone script that computes the afterpulse probability (APP) within a
+time window after the main pulse for an arbitrary run / PMT / channel, by
+reading the saved per-channel `.npz` diagnostics file directly (no database
+write, no re-analysis).
+
+```
+APP_window = sum(afterpulse_area_pe [delay_time <= window]) / sum(main_area_pe)
+```
+
+**Usage:**
+
+```bash
+# By run-id / pmt-id / channel
+python scripts/app_1us_from_npz.py --run-id 00354 --pmt-id LV2264 --channel 4
+
+# Custom window and output directory
+python scripts/app_1us_from_npz.py --run-id 00354 --pmt-id LV2264 --channel 4 \
+    --window-ns 2000 --output-dir /mnt/data/PMT/R8520_406/output
+
+# By direct .npz path
+python scripts/app_1us_from_npz.py --npz /mnt/data/PMT/R8520_406/output/run00354_LV2264_ch4.npz
+```
+
+**Options:**
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--run-id` | 5-digit run id (e.g. `00354`) | — |
+| `--pmt-id` | PMT id (e.g. `LV2264`) | — |
+| `--channel` | Channel number | — |
+| `--npz` | Direct path to the `.npz` file (takes precedence over the above) | — |
+| `--output-dir` | Directory holding the `.npz` files | `/mnt/data/PMT/R8520_406/output` |
+| `--window-ns` | Time window after the main pulse (ns) | `1000` |
