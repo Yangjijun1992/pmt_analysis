@@ -117,6 +117,16 @@ selected via `analyze_gain(..., fit_model=...)` or the `--fit-model` CLI flag.
    - asymmetry > 0.7 → dark count
    - asymmetry ≤ 0.7 → noise
 
+   This is the **only** cut applied by default. All other cut conditions are
+   optional and are NOT applied unless explicitly enabled:
+
+   - `require_edge_features=True`: additionally requires `edge_sharpness > 6.0`
+     AND `edge_prominence > 0.8`.
+   - `baseline_deviation_cut=True`: rejects waveforms where
+     `|local_baseline - record_baseline| > 15200 ADC`.
+
+   `pulse_height` is not used as a classification criterion.
+
 3. **Dark Count Rate**:
    ```
    dark_count_rate = total_dark_count / total_daq_run_time_length (Hz)
@@ -289,6 +299,11 @@ Per-channel data files containing:
 | `DEFAULT_AFTERPULSE_MIN_INTERVAL` | `35` samples | `app.py` |
 | `DEFAULT_MIN_INTERVAL_BETWEEN_PULSES` | `10` samples | `app.py` |
 | Default asymmetry threshold | `0.7` | `dark_count.py` |
+| Default edge_sharpness threshold | `6.0` | `dark_count.py` |
+| Default edge_prominence threshold | `0.8` | `dark_count.py` |
+| `require_edge_features` (default) | `False` (edge filters optional) | `dark_count.py` |
+| `baseline_deviation_cut` (default) | `False` (baseline cut optional) | `dark_count.py` |
+| Default baseline deviation threshold | `15200` ADC | `dark_count.py` |
 | Default gain fit model | `multi_gauss_fit` | `gain.py` / `gain_fit_models.py` |
 | Default integration center (`center_idx`) | `95` (window `[90:100]`) | `gain.py` |
 | Default gain fit bins / range | `120` / `(-10, 80)` | `gain_fit_models.py` |

@@ -22,15 +22,19 @@ DEFAULT_BASELINE_DEVIATION_THRESHOLD = 15200.0  # ADC
 #
 # For oscillation noise:    edge_sharpness ~ 2-4
 # For real PMT dark pulse:  edge_sharpness > 6
+#
+# These edge features are optional refinements. They are computed and stored
+# on each PulseRecord for diagnostics but are NOT mandatory gates for dark
+# count classification. They only gate classification when
+# require_edge_features is enabled.
 DEFAULT_EDGE_SHARPNESS_THRESHOLD = 6.0
 
 # Rising-edge prominence: max_neg_slope / pulse_height
-# For oscillation noise with low amplitude (<80 ADC), the falling edge
-# is gradual relative to pulse_height.
-# For real PMT pulses, the edge is very steep relative to pulse_height.
-# Used only when pulse_height < 80 ADC (low-amplitude ambiguous region).
+# For oscillation noise with low amplitude, the falling edge is gradual
+# relative to pulse_height. For real PMT pulses, the edge is very steep
+# relative to pulse_height. Like edge_sharpness, this is an optional
+# refinement, not a mandatory criterion.
 DEFAULT_EDGE_PROMINENCE_LOW = 0.8
-DEFAULT_LOW_HEIGHT_THRESHOLD = 80.0  # ADC
 
 # For validation plot: channels with noise/dark ratio > this are flagged
 # as noise-dominated channels and plotted with distinct colors.
@@ -135,34 +139,35 @@ def _compute_edge_features(wave: np.ndarray) -> tuple:
     return edge_sharpness, edge_prominence
 
 
-def _classify_dark_count_with_noise_filter(
+def _classify_dark_count(
     asymmetry: float,
-    pulse_height: float,
     edge_sharpness: float,
     edge_prominence: float,
     asymmetry_threshold: float,
     edge_sharpness_threshold: float,
     edge_prominence_low: float,
-    low_height_threshold: float,
+    require_edge_features: bool = False,
 ) -> bool:
-    """Classify a waveform as dark count or noise using three-dimensional filter.
+    """Classify a waveform as dark count or noise.
 
-    Primary classification: asymmetry > threshold
+    Primary classification: asymmetry > threshold -> dark count
+    otherwise -> noise.
 
-    Noise filter (for low-amplitude ambiguous region, pulse_height < 80 ADC):
-        Additionally requires edge_sharpness > threshold (sharp falling edge)
-        AND edge_prominence > threshold (steep edge relative to pulse height).
+    Edge features (edge_sharpness, edge_prominence) are OPTIONAL refinements.
+    They are only required when require_edge_features is True; by default
+    they are not mandatory gates, and pulse_height is not used as a
+    classification criterion.
 
     Rationale:
-        Sin/cos oscillation noise at low amplitude may randomly exceed
-        the asymmetry threshold due to phase bias, but its falling edge
-        is smooth and continuous (no sharp single-sample drop).
-        A real PMT dark pulse always has a sharp, fast falling edge.
+        A real PMT dark pulse is a sharp, asymmetric negative-going pulse,
+        so asymmetry > threshold alone identifies dark counts. Oscillation
+        noise can still be optionally rejected using the edge features if
+        require_edge_features is enabled.
     """
     if asymmetry <= asymmetry_threshold:
         return False
 
-    if pulse_height < low_height_threshold:
+    if require_edge_features:
         return (
             edge_sharpness > edge_sharpness_threshold
             and edge_prominence > edge_prominence_low
@@ -180,35 +185,24 @@ def compute_pulse_record(
     record_baseline: Optional[float] = None,
     baseline_samples: int = DEFAULT_BASELINE_SAMPLES,
     baseline_deviation_threshold: float = DEFAULT_BASELINE_DEVIATION_THRESHOLD,
+    baseline_deviation_cut: bool = False,
     edge_sharpness_threshold: float = DEFAULT_EDGE_SHARPNESS_THRESHOLD,
     edge_prominence_low: float = DEFAULT_EDGE_PROMINENCE_LOW,
-    low_height_threshold: float = DEFAULT_LOW_HEIGHT_THRESHOLD,
+    require_edge_features: bool = False,
 ) -> Optional[PulseRecord]:
     """Compute pulse record for a single waveform.
 
-    Baseline deviation:
-        If record_baseline (DAQ upstream) is provided, compute local
-        baseline from the first baseline_samples points of the waveform.
-        If |local_baseline - record_baseline| < baseline_deviation_threshold,
-        the waveform is rejected (returns None).
+    Classification (only cut applied by default):
+        asymmetry > threshold (0.7) -> dark count
+        asymmetry <= threshold     -> noise
 
-    Three-dimensional noise filter:
-        1. Asymmetry = pulse_height / pulse_range (fixed cut at 0.7)
-           asymmetry > threshold -> candidate dark count
+    Optional cuts (NOT applied unless explicitly enabled):
+        - baseline_deviation_cut: reject waveforms where
+          |local_baseline - record_baseline| > baseline_deviation_threshold.
+        - require_edge_features: additionally require edge_sharpness >
+          threshold AND edge_prominence > threshold.
 
-        2. Rising-edge sharpness (edge_sharpness):
-           max_neg_slope / rms_of_diff > threshold
-           Filters sin/cos oscillation noise whose falling edges are
-           smooth and continuous (no sharp single-sample drop).
-
-        3. Rising-edge prominence (edge_prominence):
-           max_neg_slope / pulse_height > threshold
-           Filters low-amplitude oscillation noise whose "pulse" is
-           actually a trough in an oscillation.
-
-        Steps 2+3 are applied only for pulse_height < low_height_threshold
-        (default 80 ADC), the ambiguous region where oscillation noise
-        can mimic dark count asymmetry.
+    pulse_height is not used as a classification criterion.
 
     Asymmetry formula (from notebook):
         pulse_height = abs(min(wave))  # assuming negative pulse
@@ -216,15 +210,12 @@ def compute_pulse_record(
         pulse_range = pulse_height + overshoot
         asymmetry = pulse_height / pulse_range
 
-    Classification:
-        asymmetry > 0.7 AND passes noise filter -> dark count
-        otherwise -> noise
-
     Returns:
-        PulseRecord, or None if the waveform is filtered out.
+        PulseRecord, or None only if the optional baseline_deviation_cut
+        is enabled and the waveform exceeds the deviation threshold.
     """
     deviation = 0.0
-    if record_baseline is not None:
+    if baseline_deviation_cut and record_baseline is not None:
         local_baseline = float(np.mean(wave[:baseline_samples]))
         deviation = local_baseline - record_baseline
         if abs(deviation) > baseline_deviation_threshold:
@@ -241,15 +232,14 @@ def compute_pulse_record(
 
     edge_sharpness, edge_prominence = _compute_edge_features(wave)
 
-    is_dark_count = _classify_dark_count_with_noise_filter(
+    is_dark_count = _classify_dark_count(
         asymmetry=asymmetry,
-        pulse_height=pulse_height,
         edge_sharpness=edge_sharpness,
         edge_prominence=edge_prominence,
         asymmetry_threshold=asymmetry_threshold,
         edge_sharpness_threshold=edge_sharpness_threshold,
         edge_prominence_low=edge_prominence_low,
-        low_height_threshold=low_height_threshold,
+        require_edge_features=require_edge_features,
     )
 
     return PulseRecord(
@@ -300,21 +290,23 @@ def analyze_dark_count(
     asymmetry_threshold: float = 0.7,
     edge_sharpness_threshold: float = DEFAULT_EDGE_SHARPNESS_THRESHOLD,
     edge_prominence_low: float = DEFAULT_EDGE_PROMINENCE_LOW,
-    low_height_threshold: float = DEFAULT_LOW_HEIGHT_THRESHOLD,
+    require_edge_features: bool = False,
+    baseline_deviation_cut: bool = False,
     noise_dark_ratio_threshold: float = DEFAULT_NOISE_DARK_RATIO_THRESHOLD,
 ) -> DarkCountResult:
     """Perform dark count analysis on a RawDataBundle.
 
-    Noise filter (applied after asymmetry > 0.7 classification):
-        For low-amplitude pulses (< 80 ADC), additionally requires:
-          - edge_sharpness > threshold (rising-edge steepness metric)
-          - edge_prominence > threshold (edge vs pulse height ratio)
+    Classification (only cut applied by default):
+        asymmetry > threshold (0.7) -> dark count
+        asymmetry <= threshold   -> noise
 
-        This rejects sin/cos oscillation noise whose smooth edges
-        mimic a dark pulse shape at low amplitude.
+    Optional cuts (NOT applied unless explicitly enabled):
+        - baseline_deviation_cut: reject waveforms where
+          |local_baseline - record_baseline| > baseline_deviation_threshold.
+        - require_edge_features: additionally require edge_sharpness >
+          threshold AND edge_prominence > threshold.
 
-    Asymmetry threshold (0.7) is fixed — edge features provide the
-    additional noise discrimination without changing the asymmetry cut.
+    pulse_height is not used as a classification criterion.
 
     This is the main entry point for dark count analysis.
     """
@@ -370,9 +362,10 @@ def analyze_dark_count(
                     channel=channel,
                     asymmetry_threshold=asymmetry_threshold,
                     record_baseline=record_baseline,
+                    baseline_deviation_cut=baseline_deviation_cut,
                     edge_sharpness_threshold=edge_sharpness_threshold,
                     edge_prominence_low=edge_prominence_low,
-                    low_height_threshold=low_height_threshold,
+                    require_edge_features=require_edge_features,
                 )
 
                 if pulse is None:
@@ -435,7 +428,8 @@ def analyze_dark_count(
             "runtype": bundle.runinfo.runtype,
             "edge_sharpness_threshold": edge_sharpness_threshold,
             "edge_prominence_low": edge_prominence_low,
-            "low_height_threshold": low_height_threshold,
+            "require_edge_features": require_edge_features,
+            "baseline_deviation_cut": baseline_deviation_cut,
         },
         noisy_channels=noisy_channels,
     )
