@@ -52,6 +52,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="SPE gain spectrum fit model (default: multi_gauss_fit)",
     )
     analyze_parser.add_argument(
+        "--no-noise-suppression",
+        action="store_true",
+        default=False,
+        help="Disable the afterpulse noise-suppression stage (faster, default: enabled)",
+    )
+    analyze_parser.add_argument(
         "--write-db",
         action="store_true",
         default=False,
@@ -97,6 +103,7 @@ def main() -> None:
                 save_plots=save_plots,
                 write_db=args.write_db,
                 fit_model=args.fit_model,
+                noise_suppression_enabled=not args.no_noise_suppression,
                 github_user=args.github_user,
                 github_token=args.github_token,
             )

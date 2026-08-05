@@ -43,6 +43,7 @@ def analyze_runs(
     save_plots: bool = True,
     write_db: bool = False,
     fit_model: str = "multi_gauss_fit",
+    noise_suppression_enabled: bool = True,
     github_user: str = "",
     github_token: str = "",
 ) -> int:
@@ -56,6 +57,7 @@ def analyze_runs(
     print(f"Save plots: {save_plots}")
     print(f"Write DB: {write_db}")
     print(f"SPE gain fit model: {fit_model}")
+    print(f"Noise suppression: {noise_suppression_enabled}")
     if write_db:
         print(f"Database path: {DEFAULT_DB_PATH}")
     print()
@@ -205,7 +207,8 @@ def analyze_runs(
             if "after pulse" in dt_set:
                 print(f"[run_id={ri.run_id}] Running APP analysis...")
                 try:
-                    app_result = analyze_app(bundle, pmt_id_map=pmt_id_map or None)
+                    app_result = analyze_app(bundle, pmt_id_map=pmt_id_map or None,
+                                             noise_suppression_enabled=noise_suppression_enabled)
                     print(f"[run_id={ri.run_id}] main_pulse_count = {app_result.main_pulse_count}")
                     print(f"[run_id={ri.run_id}] afterpulse_count = {app_result.afterpulse_count}")
                     print(f"[run_id={ri.run_id}] APP (overall raw) = {app_result.app_value}")
