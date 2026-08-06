@@ -475,3 +475,57 @@ python scripts/app_1us_from_npz.py --npz /mnt/data/PMT/R8520_406/output/run00354
 | `--npz` | Direct path to the `.npz` file (takes precedence over the above) | — |
 | `--output-dir` | Directory holding the `.npz` files | `/mnt/data/PMT/R8520_406/output` |
 | `--window-ns` | Time window after the main pulse (ns) | `1000` |
+
+## APP in Multiple Time Windows (`scripts/app_windows_from_npz.py`)
+
+A batch version of the above that computes APP within one or more configurable
+time windows for **all channels** of a run, reading the saved per-channel
+`.npz` files (no re-analysis):
+
+```bash
+python scripts/app_windows_from_npz.py --run-id 00373
+python scripts/app_windows_from_npz.py --run-id 00373 --windows 1000 5000
+```
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--run-id` | 5-digit run id | — |
+| `--output-dir` | Directory holding the `.npz` files | `/mnt/data/PMT/R8520_406/output` |
+| `--windows` | One or more windows after the main pulse (ns) | `1000 5000` |
+
+## Cache File Management (`scripts/manage_caches.py`)
+
+After analysing a run, the `waveform_analysis` package writes a `_cache/`
+directory inside the run's data directory containing the records / wave_pool
+binary + json caches, a run-config fingerprint, and occasionally orphaned
+`.tmp` files. After-Pulse runs produce very large caches (tens of GB per run;
+the full `run_R8520` tree can reach > 1 TB).
+
+This script detects every cache file, prints its **path / name / size**
+(human-readable) and the total, and can delete them.
+
+```bash
+# List all cache files under the data root
+python scripts/manage_caches.py
+
+# List cache files for a single run
+python scripts/manage_caches.py --run-id 00385
+
+# Preview what would be deleted (no actual deletion)
+python scripts/manage_caches.py --run-id 00385 --delete --dry-run
+
+# Actually delete cache files for a run
+python scripts/manage_caches.py --run-id 00385 --delete
+
+# Delete all caches under the data root and remove empty cache dirs
+python scripts/manage_caches.py --delete --purge-empty-dirs
+```
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--data-root` | Data root to scan | `/mnt/data/TPC` |
+| `--run-id` | Target a single run id (empty = all runs) | — |
+| `--delete` | Actually delete cache files (default: list only) | off |
+| `--dry-run` | With `--delete`, show what would be deleted without deleting | off |
+| `--purge-empty-dirs` | Remove cache directories left empty after deletion | off |
+

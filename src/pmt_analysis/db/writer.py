@@ -98,12 +98,49 @@ def build_pmt_records(
     return records
 
 
-def write_measurements(
+def dedupe_by_pmt_id(
     conn: sqlite3.Connection,
     records: List[MeasurementRecord],
 ) -> int:
+    """Remove all existing measurement rows whose pmt_id appears in ``records``.
+
+    Enforces global de-duplication by pmt_id: after a write, each pmt_id is
+    represented by only the most recent record. The new records are inserted
+    after this deletion (they become the latest record for their pmt_id).
+
+    Args:
+        conn: Open database connection.
+        records: Incoming records whose pmt_ids should be de-duplicated.
+
+    Returns:
+        Number of deleted rows.
+    """
     if not records:
         return 0
+    pmt_ids = sorted({r.pmt_id for r in records})
+    placeholders = ",".join("?" * len(pmt_ids))
+    sql = f"DELETE FROM measurements WHERE pmt_id IN ({placeholders})"
+    try:
+        cur = conn.cursor()
+        cur.execute(sql, pmt_ids)
+        return cur.rowcount
+    except sqlite3.Error as e:
+        conn.rollback()
+        raise DatabaseWriteError(f"Failed to de-duplicate by pmt_id: {e}") from e
+
+
+def write_measurements(
+    conn: sqlite3.Connection,
+    records: List[MeasurementRecord],
+    dedupe_by_pmt: bool = True,
+) -> int:
+    if not records:
+        return 0
+
+    # Global de-duplication by pmt_id (keep only latest per pmt_id)
+    if dedupe_by_pmt:
+        n_deleted = dedupe_by_pmt_id(conn, records)
+        print(f"  [db] De-duplicated {n_deleted} existing row(s) for {len(records)} pmt_id(s)")
 
     sql = f"""
         INSERT INTO measurements
