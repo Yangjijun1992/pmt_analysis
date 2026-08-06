@@ -44,6 +44,8 @@ def analyze_runs(
     write_db: bool = False,
     fit_model: str = "multi_gauss_fit",
     noise_suppression_enabled: bool = True,
+    parallel_app: bool = False,
+    app_workers: int = 0,
     github_user: str = "",
     github_token: str = "",
 ) -> int:
@@ -58,6 +60,7 @@ def analyze_runs(
     print(f"Write DB: {write_db}")
     print(f"SPE gain fit model: {fit_model}")
     print(f"Noise suppression: {noise_suppression_enabled}")
+    print(f"Parallel APP: {parallel_app}")
     if write_db:
         print(f"Database path: {DEFAULT_DB_PATH}")
     print()
@@ -207,15 +210,22 @@ def analyze_runs(
             if "after pulse" in dt_set:
                 print(f"[run_id={ri.run_id}] Running APP analysis...")
                 try:
-                    app_result = analyze_app(bundle, pmt_id_map=pmt_id_map or None,
-                                             noise_suppression_enabled=noise_suppression_enabled)
+                    if parallel_app:
+                        from pmt_analysis.analysis.app_parallel import analyze_app_parallel
+                        print(f"[run_id={ri.run_id}] APP analysis mode: multi-process (event-block)")
+                        app_result = analyze_app_parallel(
+                            bundle,
+                            n_workers=app_workers if app_workers > 0 else None,
+                            pmt_id_map=pmt_id_map or None,
+                        )
+                    else:
+                        app_result = analyze_app(bundle, pmt_id_map=pmt_id_map or None,
+                                                 noise_suppression_enabled=noise_suppression_enabled)
                     print(f"[run_id={ri.run_id}] main_pulse_count = {app_result.main_pulse_count}")
                     print(f"[run_id={ri.run_id}] afterpulse_count = {app_result.afterpulse_count}")
                     print(f"[run_id={ri.run_id}] APP (overall raw) = {app_result.app_value}")
                     print(f"[run_id={ri.run_id}] APP (overall PE) = {app_result.app_value_pe}")
                     print()
-
-                    # Per-channel summary table
                     header = (
                         f"[run_id={ri.run_id}]   "
                         f"{'PMT_ID':<10} {'CH':>3} {'MainN':>6} {'MainArea_mean':>14} "

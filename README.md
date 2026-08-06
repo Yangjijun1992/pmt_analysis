@@ -26,18 +26,31 @@ pipeline.analyze_runs()
   │       └── plotting.plot_spe_gain_fit_overlay()  # run{id}_multi_gauss_fit.png (all channels)
   │
   ├── IF "after pulse" in datatype:
-  │     analysis.app.analyze_app()
-  │       ├── find_main_pulses_per_channel()          # Main pulse detection
-  │       ├── find_afterpulse_candidates_per_channel() # Afterpulse candidate search
-  │       ├── select_afterpulses_per_channel()        # Afterpulse selection
-  │       ├── load_spe_gains_by_pmt_id()              # SPE gain loading (with local DB fallback)
-  │       ├── normalize_to_pe_per_channel()           # PE normalization
-  │       ├── compute_app_per_channel()               # APP calculation
-  │       ├── plot_afterpulse_2d_histogram()          # 2D histogram per channel
-  │       ├── plot_afterpulse_delta_time_all_channels() # Delta time distribution (3x3 grid)
-  │       ├── plot_main_pulse_area_all_channels()     # Main pulse area distribution (3x3 grid)
-  │       ├── plot_main_pulse_diagnostics()           # Main pulse parameter histograms
-  │       └── save_diagnostics_npz()                  # Save .npz files
+  │     analysis.app.analyze_app()              # serial (default; --no-noise-suppression)
+  │       ├── Find main pulses per channel
+  │       ├── Find afterpulse candidates per channel
+  │       ├── [noisy channels] noise-suppressed afterpulse search
+  │       ├── Select afterpulses per channel
+  │       ├── Load SPE gains by pmt_id (local DB fallback)
+  │       ├── Normalize charges to PE
+  │       └── Compute APP per channel
+  │
+  │     ┌─ OR, with --parallel-app:
+  │     └─ analysis.app_parallel.analyze_app_parallel()   # multi-process event-block
+  │           ├── bulk_load_waveforms()        # read ALL waveforms once (n, max_len)
+  │           ├── Split events into N contiguous blocks
+  │           ├── multiprocessing.Pool (fork)  # each worker: find main+afterpulse for its block
+  │           │     └── _process_block() → BlockResult (per-channel)
+  │           ├── _merge_block_results()       # merge per-block → per-channel
+  │           └── reuse app.py: select_afterpulses / load_spe_gains /
+  │               normalize_to_pe / compute_app_per_channel
+  │
+  │     └─ (serial & parallel both) shared post-processing:
+  │           plot_afterpulse_2d_histogram()           # 2D histogram per channel
+  │           plot_afterpulse_delta_time_all_channels() # Delta time distribution (3x3 grid)
+  │           plot_main_pulse_area_all_channels()      # Main pulse area distribution (3x3 grid)
+  │           plot_main_pulse_diagnostics()            # Main pulse parameter histograms
+  │           save_diagnostics_npz()                   # Save .npz files
   │
   └── db.writer.write_analysis_results()       # Optional DB write
 ```
@@ -84,6 +97,9 @@ pmt-analysis analyze --run-id 00305 --fit-model poisson_fit
 
 # With database write
 pmt-analysis analyze --run-id 00305 --write-db
+
+# Use the multi-process (event-block parallel) APP analysis framework
+pmt-analysis analyze --run-id 00373 --parallel-app --app-workers 8
 
 # Also runnable as a python module
 python -m pmt_analysis.cli analyze --run-id 00350 --fit-model multi_gauss_fit
@@ -248,6 +264,79 @@ APP = sum(afterpulse_charge) / sum(main_pulse_charge)
 - `app_value_pe`: APP in PE units
 - `main_pulse_count`: Number of main pulses
 - `afterpulse_count`: Number of afterpulses
+
+#### Multi-process APP framework (`--parallel-app`)
+
+The After-Pulse analysis is the most compute-heavy stage (hundreds of
+thousands to millions of waveforms). The serial path loads each waveform via a
+per-record `rv.signals(record_id)` call and loops over every record once for
+main-pulse finding and again for afterpulse candidate finding — a per-record
+I/O bottleneck.
+
+`pmt_analysis.analysis.app_parallel.analyze_app_parallel()` accelerates this
+using an **event-block parallel** partition:
+
+```
+analyze_app_parallel(bundle, n_workers)
+  │
+  ├─ 1. bulk_load_waveforms()          # rv.signals(all_record_ids) ONCE
+  │      → waveforms (n_events, max_len) float32  (contiguous, shareable)
+  │
+  ├─ 2. Partition event indices → n_workers contiguous blocks
+  │
+  ├─ 3. multiprocessing.Pool(n_workers, initializer=_init_worker)
+  │      # on Linux fork, waveforms + records are inherited via
+  │      # copy-on-write shared memory (no pickling of the data)
+  │      for each block:  pool.map(_process_block, task)
+  │           _process_block(block):
+  │              _find_main_pulses_in_block()            → main pulses
+  │              _find_afterpulse_candidates_in_block()  → afterpulse candidates
+  │              returns BlockResult (per-channel, for its block)
+  │
+  ├─ 4. _merge_block_results()          # combine all BlockResults → per-channel
+  │
+  └─ 5. reuse serial post-processing (pmt_analysis.analysis.app):
+         select_afterpulses_per_channel()
+         load_spe_gains_by_pmt_id()     # local DB fallback
+         normalize_to_pe_per_channel()
+         compute_app_per_channel()
+```
+
+Key points:
+
+1. **Bulk-load once** — `bulk_load_waveforms()` reads every waveform in a
+   single `rv.signals(all_record_ids)` call into a contiguous float32 array,
+   eliminating the per-record I/O bottleneck (the dominant serial cost).
+2. **Event-block partition** — events are split into `n_workers` contiguous
+   blocks, so the work is spread across all cores regardless of channel count
+   (load balancing by event count, not channel count).
+3. **Shared memory via fork** — each worker finds main pulses and afterpulse
+   candidates for its block from the inherited shared arrays. Each record
+   belongs to exactly one block, so there is no cross-block main-pulse
+   dependency.
+4. **Consistent results** — the parent reuses the exact same selection,
+   SPE-gain normalization, and APP computation from the serial module, so the
+   two paths are numerically identical. `tests/test_app_parallel.py` asserts
+   serial == parallel main/afterpulse counts and per-channel APP values, and
+   that `n_workers=1` == `n_workers=N`.
+
+CLI usage:
+
+```bash
+pmt-analysis analyze --run-id 00373 --parallel-app                 # auto workers (cpu-1)
+pmt-analysis analyze --run-id 00373 --parallel-app --app-workers 8
+```
+
+Notes:
+- The parallel path currently runs the **standard** afterpulse search (no
+  noise-suppression stage). For runs with channels flagged noisy
+  (baseline RMS >= 5 ADC), the noise-suppression stage is not applied in the
+  parallel path yet — use the serial path (with or without
+  `--no-noise-suppression`) when strict per-channel noise handling is required.
+- Python `multiprocessing` requires fork availability (Linux default).
+- The post-processing steps after the parallel block (SPE-gain loading is the
+  only serial step reading the DB) are lightweight and run in the parent.
+
 
 ### 4. Diagnostic Outputs
 

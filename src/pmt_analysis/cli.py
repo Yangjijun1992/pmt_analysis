@@ -58,6 +58,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Disable the afterpulse noise-suppression stage (faster, default: enabled)",
     )
     analyze_parser.add_argument(
+        "--parallel-app",
+        action="store_true",
+        default=False,
+        help="Use the multi-process (event-block parallel) APP analysis framework",
+    )
+    analyze_parser.add_argument(
+        "--app-workers",
+        type=int,
+        default=0,
+        help="Number of worker processes for --parallel-app (default: auto = cpu-1)",
+    )
+    analyze_parser.add_argument(
         "--write-db",
         action="store_true",
         default=False,
@@ -104,6 +116,8 @@ def main() -> None:
                 write_db=args.write_db,
                 fit_model=args.fit_model,
                 noise_suppression_enabled=not args.no_noise_suppression,
+                parallel_app=args.parallel_app,
+                app_workers=args.app_workers,
                 github_user=args.github_user,
                 github_token=args.github_token,
             )
