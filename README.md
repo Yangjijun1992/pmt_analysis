@@ -503,6 +503,13 @@ cache. They are managed by **two separate scripts**:
 - [`scripts/clean_tmp_caches.py`](#2-tmp-staging-caches-scriptsclean_tmp_cachespy) —
   the `/tmp` staging caches written while parsing raw data
 
+> **Python version note:** both scripts require Python 3.7+ and are pure
+> stdlib. The bare `python` command may point to Python 2 (e.g. under `sudo`
+> or in a different env), which would otherwise fail with a confusing
+> `SyntaxError`. Always invoke them with `python3` (or an absolute python3
+> path such as the `py12`/`pyth12` conda env); the scripts print a clear
+> version message instead if invoked with an old interpreter.
+
 ### 1. Per-run caches (`scripts/manage_caches.py`)
 
 The `waveform_analysis` package writes a `_cache/` directory inside each run's

@@ -5,22 +5,44 @@ Leftovers are whole directories often owned by other users (root / daq / yjj),
 so a normal user may not be able to delete them. When run under a user with
 sudo (e.g. the ``daq`` user), pass ``--sudo`` to remove them via ``sudo rm``.
 
+NOTE: this script is deliberately kept free of Python-3-only syntax so that a
+bare ``python`` (which may be Python 2, e.g. under ``sudo``) can still print a
+clear version error instead of a confusing SyntaxError.
+
 Usage:
-    python scripts/clean_tmp_caches.py                    # list only
-    python scripts/clean_tmp_caches.py --delete --dry-run # preview
-    python scripts/clean_tmp_caches.py --delete           # as owner
-    python scripts/clean_tmp_caches.py --delete --sudo    # as daq user (sudo)
+    python3 scripts/clean_tmp_caches.py                    # list only
+    python3 scripts/clean_tmp_caches.py --delete --dry-run # preview
+    python3 scripts/clean_tmp_caches.py --delete           # as owner
+    python3 scripts/clean_tmp_caches.py --delete --sudo    # as daq user
 """
-from __future__ import annotations
+import sys
+
+# Fail fast with a clear message under Python < 3.7. This guard and the rest
+# of the file use only Python-2/3-compatible syntax so this message is shown
+# even when invoked as `python` (Python 2).
+if sys.version_info[0] < 3:
+    sys.exit(
+        "This script requires Python 3.7+. You are running Python 2 "
+        "(`python` may point to it, e.g. under sudo).\n"
+        "Use: sudo python3 scripts/clean_tmp_caches.py ... "
+        "or an absolute python3 path (e.g. the py12/pyth12 conda env)."
+    )
+if sys.version_info < (3, 7):
+    sys.exit(
+        "This script requires Python 3.7+ "
+        "(you are running Python {}.{}).\n".format(
+            sys.version_info[0], sys.version_info[1]
+        ) +
+        "Use: sudo python3 scripts/clean_tmp_caches.py ... or an absolute "
+        "python3 path."
+    )
 
 import argparse
 import grp
 import pwd
 import shutil
 import subprocess
-import sys
 from pathlib import Path
-from typing import List
 
 DEFAULT_ROOT = "/tmp"
 # Directories produced by waveform_analysis staging in /tmp (leftover caches)
@@ -28,28 +50,31 @@ DIR_PREFIXES = ("v1725_parts_", "records_parts_", "records_bundle_ref_")
 DIR_NAMES = ("waveform-mpl-cache",)
 
 
-def human_size(num_bytes: float) -> str:
+def human_size(num_bytes):
     num_bytes = float(num_bytes)
     for unit in ("B", "KB", "MB", "GB", "TB"):
         if num_bytes < 1024.0:
-            return f"{num_bytes:.2f} {unit}"
+            return "{:.2f} {}".format(num_bytes, unit)
         num_bytes /= 1024.0
-    return f"{num_bytes:.2f} PB"
+    return "{:.2f} PB".format(num_bytes)
 
 
-def owner_of(path: Path) -> str:
+def owner_of(path):
     """Return 'user:group' for a path, or '?' if it cannot be stat'd."""
     try:
         st = path.stat()
-        return f"{pwd.getpwuid(st.st_uid).pw_name}:{grp.getgrgid(st.st_gid).gr_name}"
+        return "{}:{}".format(
+            pwd.getpwuid(st.st_uid).pw_name,
+            grp.getgrgid(st.st_gid).gr_name,
+        )
     except (OSError, KeyError):
         return "?"
 
 
-def find_tmp_cache_dirs(root: Path) -> List[Path]:
+def find_tmp_cache_dirs(root):
     if not root.exists():
         return []
-    found: List[Path] = []
+    found = []
     try:
         for name in sorted(root.iterdir()):
             if not name.is_dir():
@@ -62,7 +87,7 @@ def find_tmp_cache_dirs(root: Path) -> List[Path]:
     return found
 
 
-def dir_size(path: Path) -> int:
+def dir_size(path):
     total = 0
     try:
         for p in path.rglob("*"):
@@ -73,19 +98,16 @@ def dir_size(path: Path) -> int:
     return total
 
 
-def is_dangerous(path: Path, root: Path) -> bool:
+def is_dangerous(path, root):
     """Guard against deleting the scan root, '/', or empty paths."""
     if not str(path) or path == Path("/") or path == root:
-        print(f"  [abort] refusing dangerous path: {path}")
+        print("  [abort] refusing dangerous path: {}".format(path))
         return True
     return False
 
 
-def delete_one(path: Path, use_sudo: bool) -> bool:
-    """Delete one file/dir (recursively), optionally via sudo.
-
-    Returns True on success, False on failure/abort.
-    """
+def delete_one(path, use_sudo):
+    """Delete one file/dir (recursively), optionally via sudo."""
     if is_dangerous(path, path.parent):
         return False
 
@@ -97,14 +119,13 @@ def delete_one(path: Path, use_sudo: bool) -> bool:
                 path.unlink()
             return True
         except PermissionError:
-            print(f"  [error] no permission to delete {path} "
-                  f"(owner {owner_of(path)}). Re-run with --sudo.")
+            print("  [error] no permission to delete {} "
+                  "(owner {}). Re-run with --sudo.".format(path, owner_of(path)))
             return False
         except OSError as e:
-            print(f"  [error] failed to delete {path}: {e}")
+            print("  [error] failed to delete {}: {}".format(path, e))
             return False
 
-    # sudo path
     cmd = (["sudo", "rm", "-rf", str(path)] if path.is_dir()
            else ["sudo", "rm", "-f", str(path)])
     try:
@@ -112,33 +133,34 @@ def delete_one(path: Path, use_sudo: bool) -> bool:
         return True
     except subprocess.CalledProcessError as e:
         err = e.stderr.decode(errors="replace") if e.stderr else str(e)
-        print(f"  [error] sudo rm failed for {path}: {err}")
+        print("  [error] sudo rm failed for {}: {}".format(path, err))
         return False
 
 
-def summarize(dirs: List[Path]) -> None:
+def summarize(dirs):
     if not dirs:
         print("  (no staging caches found)")
         return
     total = 0
-    print(f"  {'Location':<48} {'Name':<42} {'Owner':<14} {'Size':>9}")
+    print("  {:<48} {:<42} {:<14} {:>9}".format("Location", "Name", "Owner", "Size"))
     print("  " + "-" * 116)
     for d in dirs:
         size = dir_size(d)
         total += size
-        print(f"  {str(d.parent):<48} {d.name:<42} {owner_of(d):<14} {human_size(size):>9}")
+        print("  {:<48} {:<42} {:<14} {:>9}".format(
+            str(d.parent), d.name, owner_of(d), human_size(size)))
     print("  " + "-" * 116)
-    print(f"  TOTAL: {len(dirs)} dir(s), {human_size(total)}")
+    print("  TOTAL: {} dir(s), {}".format(len(dirs), human_size(total)))
 
 
-def main() -> None:
+def main():
     parser = argparse.ArgumentParser(
         description="Scan/display/delete waveform_analysis /tmp staging caches.",
     )
     parser.add_argument(
         "--root",
         default=DEFAULT_ROOT,
-        help=f"Directory to scan (default: {DEFAULT_ROOT})",
+        help="Directory to scan (default: {})".format(DEFAULT_ROOT),
     )
     parser.add_argument(
         "--delete",
@@ -168,29 +190,29 @@ def main() -> None:
 
     root = Path(args.root)
     if not root.exists():
-        print(f"ERROR: directory does not exist: {root}")
+        print("ERROR: directory does not exist: {}".format(root))
         sys.exit(1)
 
     dirs = find_tmp_cache_dirs(root)
 
     if not args.delete:
-        print(f"waveform_analysis /tmp staging caches under {root} "
-              f"({len(dirs)} dir(s)):\n")
+        print("waveform_analysis /tmp staging caches under {} "
+              "({} dir(s)):\n".format(root, len(dirs)))
         summarize(dirs)
         print("\nAdd --delete to remove them, or --delete --dry-run to preview.")
         return
 
     mode = " via sudo" if args.sudo else ""
     if args.dry_run:
-        print(f"Previewing deletion of {len(dirs)} staging cache dir(s){mode}...\n")
+        print("Previewing deletion of {} staging cache dir(s){}...\n".format(len(dirs), mode))
         for d in dirs:
-            print(f"  [dry-run] would delete {d} ({human_size(dir_size(d))})")
-        print(f"\nDone. {len(dirs)} dir(s) would have been deleted.")
+            print("  [dry-run] would delete {} ({})".format(d, human_size(dir_size(d))))
+        print("\nDone. {} dir(s) would have been deleted.".format(len(dirs)))
         return
 
-    print(f"Deleting {len(dirs)} staging cache dir(s){mode}...\n")
+    print("Deleting {} staging cache dir(s){}...\n".format(len(dirs), mode))
     n = sum(1 for d in dirs if delete_one(d, use_sudo=args.sudo))
-    print(f"\nDone. Deleted {n} staging cache dir(s).")
+    print("\nDone. Deleted {} staging cache dir(s).".format(n))
 
 
 if __name__ == "__main__":
