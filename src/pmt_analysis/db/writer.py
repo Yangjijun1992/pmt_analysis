@@ -64,7 +64,11 @@ def build_pmt_records(
     if app_result and app_result.channels:
         for ch_r in app_result.channels:
             key = (ch_r.board, ch_r.channel)
-            app_by_board_ch[key] = ch_r.app_value_pe
+            # Prefer the PE-normalized APP; fall back to the raw APP when
+            # SPE gains are unavailable (PE normalization was skipped).
+            app_by_board_ch[key] = (
+                ch_r.app_value_pe if ch_r.app_value_pe is not None else ch_r.app_value
+            )
 
     records: List[MeasurementRecord] = []
     unmapped: List[str] = []
