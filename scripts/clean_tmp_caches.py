@@ -1,41 +1,23 @@
 #!/usr/bin/env python3
-"""Scan, display, and (optionally) delete the /tmp waveform_analysis staging
-caches.
+"""Scan, display, and (optionally) delete /tmp waveform_analysis staging caches.
 
-While parsing raw data, the ``waveform_analysis`` package writes staging
-directories under /tmp that are not always cleaned up afterwards. Common
-leftovers are whole directories:
-
-    /tmp/v1725_parts_<8chars>/        # per-channel records_part_*.dat
-    /tmp/records_parts_<8chars>/      # multi-process records staging
-    /tmp/records_bundle_ref_<8chars>/ # indexed merge staging
-    /tmp/waveform-mpl-cache           # matplotlib cache
-
-After-Pulse runs leave very large staging dirs (tens of GB each; the /tmp
-leftovers can total hundreds of GB). This standalone script detects every such
-directory, prints its path / name / size and the grand total, and can delete
-them (directories are removed recursively).
-
-This is intentionally separate from ``manage_caches.py`` (which handles the
-per-run ``_cache/`` directories inside the DAQ data tree).
+Leftovers are whole directories often owned by other users (root / daq / yjj),
+so a normal user may not be able to delete them. When run under a user with
+sudo (e.g. the ``daq`` user), pass ``--sudo`` to remove them via ``sudo rm``.
 
 Usage:
-    # List all detected staging caches under /tmp
-    python scripts/clean_tmp_caches.py
-
-    # List from a custom directory
-    python scripts/clean_tmp_caches.py --root /tmp
-
-    # Preview deletion (list only, nothing removed)
-    python scripts/clean_tmp_caches.py --delete --dry-run
-
-    # Actually delete them
-    python scripts/clean_tmp_caches.py --delete
+    python scripts/clean_tmp_caches.py                    # list only
+    python scripts/clean_tmp_caches.py --delete --dry-run # preview
+    python scripts/clean_tmp_caches.py --delete           # as owner
+    python scripts/clean_tmp_caches.py --delete --sudo    # as daq user (sudo)
 """
 from __future__ import annotations
 
 import argparse
+import grp
+import pwd
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 from typing import List
@@ -53,6 +35,15 @@ def human_size(num_bytes: float) -> str:
             return f"{num_bytes:.2f} {unit}"
         num_bytes /= 1024.0
     return f"{num_bytes:.2f} PB"
+
+
+def owner_of(path: Path) -> str:
+    """Return 'user:group' for a path, or '?' if it cannot be stat'd."""
+    try:
+        st = path.stat()
+        return f"{pwd.getpwuid(st.st_uid).pw_name}:{grp.getgrgid(st.st_gid).gr_name}"
+    except (OSError, KeyError):
+        return "?"
 
 
 def find_tmp_cache_dirs(root: Path) -> List[Path]:
@@ -82,35 +73,62 @@ def dir_size(path: Path) -> int:
     return total
 
 
+def is_dangerous(path: Path, root: Path) -> bool:
+    """Guard against deleting the scan root, '/', or empty paths."""
+    if not str(path) or path == Path("/") or path == root:
+        print(f"  [abort] refusing dangerous path: {path}")
+        return True
+    return False
+
+
+def delete_one(path: Path, use_sudo: bool) -> bool:
+    """Delete one file/dir (recursively), optionally via sudo.
+
+    Returns True on success, False on failure/abort.
+    """
+    if is_dangerous(path, path.parent):
+        return False
+
+    if not use_sudo:
+        try:
+            if path.is_dir():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
+            return True
+        except PermissionError:
+            print(f"  [error] no permission to delete {path} "
+                  f"(owner {owner_of(path)}). Re-run with --sudo.")
+            return False
+        except OSError as e:
+            print(f"  [error] failed to delete {path}: {e}")
+            return False
+
+    # sudo path
+    cmd = (["sudo", "rm", "-rf", str(path)] if path.is_dir()
+           else ["sudo", "rm", "-f", str(path)])
+    try:
+        subprocess.run(cmd, check=True, capture_output=True)
+        return True
+    except subprocess.CalledProcessError as e:
+        err = e.stderr.decode(errors="replace") if e.stderr else str(e)
+        print(f"  [error] sudo rm failed for {path}: {err}")
+        return False
+
+
 def summarize(dirs: List[Path]) -> None:
     if not dirs:
         print("  (no staging caches found)")
         return
     total = 0
-    print(f"  {'Location':<52} {'Name':<46} {'Size':>10}")
-    print("  " + "-" * 110)
+    print(f"  {'Location':<48} {'Name':<42} {'Owner':<14} {'Size':>9}")
+    print("  " + "-" * 116)
     for d in dirs:
         size = dir_size(d)
         total += size
-        print(f"  {str(d.parent):<52} {d.name:<46} {human_size(size):>10}")
-    print("  " + "-" * 110)
+        print(f"  {str(d.parent):<48} {d.name:<42} {owner_of(d):<14} {human_size(size):>9}")
+    print("  " + "-" * 116)
     print(f"  TOTAL: {len(dirs)} dir(s), {human_size(total)}")
-
-
-def delete_paths(paths: List[Path], dry_run: bool) -> int:
-    n = 0
-    for p in paths:
-        if not p.exists():
-            continue
-        if dry_run:
-            print(f"  [dry-run] would delete {p} ({human_size(dir_size(p))})")
-            continue
-        try:
-            shutil.rmtree(p)
-            n += 1
-        except OSError as e:
-            print(f"  [error] failed to delete {p}: {e}")
-    return n
 
 
 def main() -> None:
@@ -134,10 +152,19 @@ def main() -> None:
         default=False,
         help="With --delete, show what would be deleted without deleting.",
     )
+    parser.add_argument(
+        "--sudo",
+        action="store_true",
+        default=False,
+        help="Delete via sudo (use under the daq user for caches owned by "
+             "root/other users).",
+    )
     args = parser.parse_args()
 
     if args.delete and args.dry_run:
         print("Dry-run mode: no directories will actually be deleted.\n")
+    if args.sudo and not args.delete:
+        print("NOTE: --sudo only affects deletion; add --delete to remove.\n")
 
     root = Path(args.root)
     if not root.exists():
@@ -153,16 +180,17 @@ def main() -> None:
         print("\nAdd --delete to remove them, or --delete --dry-run to preview.")
         return
 
+    mode = " via sudo" if args.sudo else ""
     if args.dry_run:
-        print(f"Previewing deletion of {len(dirs)} staging cache dir(s)...\n")
-    else:
-        print(f"Deleting {len(dirs)} staging cache dir(s)...\n")
-    n = delete_paths(dirs, args.dry_run)
+        print(f"Previewing deletion of {len(dirs)} staging cache dir(s){mode}...\n")
+        for d in dirs:
+            print(f"  [dry-run] would delete {d} ({human_size(dir_size(d))})")
+        print(f"\nDone. {len(dirs)} dir(s) would have been deleted.")
+        return
 
-    if not args.dry_run:
-        print(f"\nDone. Deleted {n} staging cache dir(s).")
-    else:
-        print(f"\nDone. {n} staging cache dir(s) would have been deleted.")
+    print(f"Deleting {len(dirs)} staging cache dir(s){mode}...\n")
+    n = sum(1 for d in dirs if delete_one(d, use_sudo=args.sudo))
+    print(f"\nDone. Deleted {n} staging cache dir(s).")
 
 
 if __name__ == "__main__":

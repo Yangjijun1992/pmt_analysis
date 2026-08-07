@@ -514,7 +514,12 @@ data directory containing:
 
 After-Pulse runs produce very large caches (tens of GB per run; the full
 `run_R8520` tree can reach > 1 TB). This script lists the cache **files**
-(path / name / size), reports the total, and can delete them.
+(path / name / size / owner), reports the total, and can delete them.
+
+The cache dirs are usually owned by the DAQ user. If you run as a user that
+does **not** own them (e.g. `yjj`), use `--sudo` under a user with sudo (e.g.
+the `daq` user). Without `--sudo`, a permission error prints the file owner and
+tells you to re-run with `--sudo`.
 
 ```bash
 # List all run _cache files under the data root
@@ -526,8 +531,11 @@ python scripts/manage_caches.py --run-id 00385
 # Preview what would be deleted (no actual deletion)
 python scripts/manage_caches.py --run-id 00385 --delete --dry-run
 
-# Actually delete cache files for a run
+# Actually delete cache files for a run (as the file owner)
 python scripts/manage_caches.py --run-id 00385 --delete
+
+# Delete via sudo (when not the file owner, e.g. under the daq user)
+python scripts/manage_caches.py --delete --sudo
 
 # Delete all run caches under the data root and remove empty cache dirs
 python scripts/manage_caches.py --delete --purge-empty-dirs
@@ -539,6 +547,7 @@ python scripts/manage_caches.py --delete --purge-empty-dirs
 | `--run-id` | Target a single run id (empty = all runs) | — |
 | `--delete` | Actually delete cache files (default: list only) | off |
 | `--dry-run` | With `--delete`, show what would be deleted without deleting | off |
+| `--sudo` | Delete via sudo (needed when not the file owner) | off |
 | `--purge-empty-dirs` | Remove cache directories left empty after deletion | off |
 
 ### 2. `/tmp` staging caches (`scripts/clean_tmp_caches.py`)
@@ -551,8 +560,12 @@ under `/tmp` that are not always cleaned up:
 - `/tmp/waveform-mpl-cache`
 
 These can accumulate tens of GB (e.g. 70+ leftover dirs ≈ 570 GB). This
-standalone script detects, prints (path / name / size + total), and can
+standalone script detects, prints (path / name / size / owner + total), and can
 recursively delete them — independently of the run `_cache` management.
+
+The `/tmp` leftovers are often owned by other users (root / daq / active DAQ
+accounts). To delete them, run under the `daq` user (which owns the data and
+has sudo) and pass `--sudo`; a permission error otherwise prints the owner.
 
 ```bash
 # List all detected staging caches under /tmp
@@ -564,8 +577,11 @@ python scripts/clean_tmp_caches.py --root /tmp
 # Preview deletion (nothing removed)
 python scripts/clean_tmp_caches.py --delete --dry-run
 
-# Actually delete them (directories removed recursively)
+# Actually delete them (as the owner)
 python scripts/clean_tmp_caches.py --delete
+
+# Delete via sudo (under the daq user; removes root/other-user caches)
+python scripts/clean_tmp_caches.py --delete --sudo
 ```
 
 | Flag | Description | Default |
@@ -573,6 +589,7 @@ python scripts/clean_tmp_caches.py --delete
 | `--root` | Directory to scan for staging caches | `/tmp` |
 | `--delete` | Actually delete the staging caches (default: list only) | off |
 | `--dry-run` | With `--delete`, show what would be deleted without deleting | off |
+| `--sudo` | Delete via sudo (needed for caches owned by other users) | off |
 
 
 

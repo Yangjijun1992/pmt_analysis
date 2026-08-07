@@ -10,11 +10,15 @@ directory inside the run's data directory containing:
     *.tmp                                    # in-progress / orphaned writes
 
 After-Pulse runs produce very large caches (tens of GB). This script lists the
-run ``_cache`` files (path / name / size), reports the total, and can delete
-them.
+run ``_cache`` files (path / name / size / owner), reports the total, and can
+delete them.
 
-NOTE: the waveform_analysis staging caches that are written to ``/tmp`` are
-handled by the separate script ``scripts/clean_tmp_caches.py``.
+The cache directories are usually owned by the DAQ user. When run under a user
+that owns the files you can delete directly; otherwise pass ``--sudo`` (under
+the ``daq`` user, who has sudo) to remove them via ``sudo rm``.
+
+NOTE: the waveform_analysis staging caches written to ``/tmp`` are handled by
+the separate script ``scripts/clean_tmp_caches.py``.
 
 Usage:
     # List all run _cache files under a data root
@@ -29,18 +33,33 @@ Usage:
     # Actually delete the cache files for a run
     python scripts/manage_caches.py --run-id 00373 --delete
 
+    # Delete via sudo (when not the file owner)
+    python scripts/manage_caches.py --delete --sudo
+
     # Delete all run caches and remove empty cache dirs
     python scripts/manage_caches.py --delete --purge-empty-dirs
 """
 from __future__ import annotations
 
 import argparse
+import grp
+import pwd
+import subprocess
 import sys
 from pathlib import Path
 from typing import List
 
 DEFAULT_DATA_ROOT = "/mnt/data/TPC"
 CACHE_DIRNAME = "_cache"
+
+
+def owner_of(path: Path) -> str:
+    """Return 'user:group' for a path, or '?' if it cannot be stat'd."""
+    try:
+        st = path.stat()
+        return f"{pwd.getpwuid(st.st_uid).pw_name}:{grp.getgrgid(st.st_gid).gr_name}"
+    except (OSError, KeyError):
+        return "?"
 
 
 def human_size(num_bytes: float) -> str:
@@ -74,32 +93,52 @@ def summarize(files: List[Path]) -> None:
         return
 
     total = 0
-    print(f"  {'Path':<52} {'Name':<46} {'Size':>10}")
-    print("  " + "-" * 110)
+    print(f"  {'Path':<48} {'Name':<42} {'Owner':<14} {'Size':>9}")
+    print("  " + "-" * 116)
     for f in files:
         try:
             size = f.stat().st_size
         except OSError:
             size = 0
         total += size
-        print(f"  {str(f.parent):<52} {f.name:<46} {human_size(size):>10}")
-    print("  " + "-" * 110)
+        print(f"  {str(f.parent):<48} {f.name:<42} {owner_of(f):<14} {human_size(size):>9}")
+    print("  " + "-" * 116)
     print(f"  TOTAL: {len(files)} file(s), {human_size(total)}")
 
 
-def delete_files(files: List[Path], dry_run: bool) -> int:
+def delete_files(files: List[Path], dry_run: bool, use_sudo: bool = False) -> int:
     """Delete the given files (or report them in dry-run).
+
+    Individual files are removed with ``unlink``; ``rm -f`` is used when
+    ``--sudo`` is set (for files owned by other users). Print the owner on a
+    permission error.
 
     Returns the number of files deleted/scheduled.
     """
     n = 0
     for f in files:
-        if f.exists():
-            if dry_run:
-                print(f"  [dry-run] would delete {f} ({human_size(f.stat().st_size)})")
+        if not f.exists():
+            continue
+        if dry_run:
+            print(f"  [dry-run] would delete {f} ({human_size(f.stat().st_size)})")
+            continue
+        try:
+            f.unlink()
+            n += 1
+        except PermissionError:
+            if use_sudo:
+                try:
+                    subprocess.run(["sudo", "rm", "-f", str(f)], check=True,
+                                   capture_output=True)
+                    n += 1
+                except subprocess.CalledProcessError as e:
+                    err = e.stderr.decode(errors="replace") if e.stderr else str(e)
+                    print(f"  [error] sudo rm failed for {f}: {err}")
             else:
-                f.unlink()
-                n += 1
+                print(f"  [error] no permission to delete {f} "
+                      f"(owner {owner_of(f)}). Re-run with --sudo.")
+        except OSError as e:
+            print(f"  [error] failed to delete {f}: {e}")
     return n
 
 
@@ -166,10 +205,19 @@ def main() -> None:
         default=False,
         help="Remove cache directories that become empty after deletion.",
     )
+    parser.add_argument(
+        "--sudo",
+        action="store_true",
+        default=False,
+        help="Delete via sudo (use under the daq user for cache files owned "
+             "by other users).",
+    )
     args = parser.parse_args()
 
     if args.delete and args.dry_run:
         print("Dry-run mode: no files will actually be deleted.\n")
+    if args.sudo and not args.delete:
+        print("NOTE: --sudo only affects deletion; add --delete to remove.\n")
 
     data_root = Path(args.data_root)
     if not data_root.exists():
@@ -197,10 +245,12 @@ def main() -> None:
         return
 
     if args.dry_run:
-        print(f"Previewing deletion of {len(all_files)} cache file(s)...\n")
+        print(f"Previewing deletion of {len(all_files)} cache file(s)"
+              + (" via sudo" if args.sudo else "") + "...\n")
     else:
-        print(f"Deleting {len(all_files)} cache file(s)...\n")
-    n = delete_files(all_files, args.dry_run)
+        print(f"Deleting {len(all_files)} cache file(s)"
+              + (" via sudo" if args.sudo else "") + "...\n")
+    n = delete_files(all_files, args.dry_run, use_sudo=args.sudo)
 
     if args.purge_empty_dirs and not args.dry_run:
         removed = prune_empty_cache_dirs(affected_dirs)
