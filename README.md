@@ -493,58 +493,86 @@ python scripts/app_windows_from_npz.py --run-id 00373 --windows 1000 5000
 | `--output-dir` | Directory holding the `.npz` files | `/mnt/data/PMT/R8520_406/output` |
 | `--windows` | One or more windows after the main pulse (ns) | `1000 5000` |
 
-## Cache File Management (`scripts/manage_caches.py`)
+## Cache File Management
 
-Two kinds of cache are produced when analysing runs:
+After analysing a run, the `waveform_analysis` package produces two kinds of
+cache. They are managed by **two separate scripts**:
 
-1. **In-run caches** — the `waveform_analysis` package writes a `_cache/`
-   directory inside each run's data directory containing the records / wave_pool
-   binary + json caches, a run-config fingerprint, and occasionally orphaned
-   `.tmp` files. After-Pulse runs produce very large caches (tens of GB per run;
-   the full `run_R8520` tree can reach > 1 TB).
+- [`scripts/manage_caches.py`](#1-per-run-caches-scriptsmanage_cachespy) —
+  the per-run `_cache/` directories inside the DAQ data tree
+- [`scripts/clean_tmp_caches.py`](#2-tmp-staging-caches-scriptsclean_tmp_cachespy) —
+  the `/tmp` staging caches written while parsing raw data
 
-2. **`/tmp` staging caches** — `waveform_analysis` also writes staging
-   directories under `/tmp` while parsing raw data (not always cleaned up):
-   - `/tmp/v1725_parts_<8chars>/` (per-channel `records_part_*.dat`)
-   - `/tmp/records_parts_<8chars>/`, `/tmp/records_bundle_ref_<8chars>/`
-   - `/tmp/waveform-mpl-cache`
+### 1. Per-run caches (`scripts/manage_caches.py`)
 
-   These can accumulate tens of GB (e.g. 70+ leftover dirs ≈ 570 GB).
+The `waveform_analysis` package writes a `_cache/` directory inside each run's
+data directory containing:
+- `{run_id}-records-{hash}.bin` / `.json` — record metadata cache
+- `{run_id}-wave_pool-{hash}.bin` / `.json` — raw waveform pool cache
+- `_run_config_state.json` — run config fingerprint
+- `*.tmp` — in-progress / orphaned writes
 
-This script detects every cache file, prints its **path / name / size**
-(human-readable) and the total, and can delete them. Whole directories
-(including `/tmp` staging dirs) are removed recursively.
+After-Pulse runs produce very large caches (tens of GB per run; the full
+`run_R8520` tree can reach > 1 TB). This script lists the cache **files**
+(path / name / size), reports the total, and can delete them.
 
 ```bash
 # List all run _cache files under the data root
 python scripts/manage_caches.py
-
-# Also include the /tmp waveform_analysis staging caches
-python scripts/manage_caches.py --tmp
 
 # List cache files for a single run
 python scripts/manage_caches.py --run-id 00385
 
 # Preview what would be deleted (no actual deletion)
 python scripts/manage_caches.py --run-id 00385 --delete --dry-run
-python scripts/manage_caches.py --tmp --delete --dry-run
 
-# Actually delete cache files for a run, or the /tmp staging caches
+# Actually delete cache files for a run
 python scripts/manage_caches.py --run-id 00385 --delete
-python scripts/manage_caches.py --tmp --delete
 
-# Delete all run caches + /tmp staging, and remove empty cache dirs
-python scripts/manage_caches.py --tmp --delete --purge-empty-dirs
+# Delete all run caches under the data root and remove empty cache dirs
+python scripts/manage_caches.py --delete --purge-empty-dirs
 ```
 
 | Flag | Description | Default |
 |------|-------------|---------|
 | `--data-root` | Data root to scan | `/mnt/data/TPC` |
 | `--run-id` | Target a single run id (empty = all runs) | — |
-| `--tmp` | Also scan `/tmp` for waveform_analysis staging caches | off |
-| `--tmp-root` | Directory to scan for staging caches | `/tmp` |
 | `--delete` | Actually delete cache files (default: list only) | off |
 | `--dry-run` | With `--delete`, show what would be deleted without deleting | off |
 | `--purge-empty-dirs` | Remove cache directories left empty after deletion | off |
+
+### 2. `/tmp` staging caches (`scripts/clean_tmp_caches.py`)
+
+While parsing raw data, `waveform_analysis` writes staging **directories**
+under `/tmp` that are not always cleaned up:
+
+- `/tmp/v1725_parts_<8chars>/` (per-channel `records_part_*.dat`)
+- `/tmp/records_parts_<8chars>/`, `/tmp/records_bundle_ref_<8chars>/`
+- `/tmp/waveform-mpl-cache`
+
+These can accumulate tens of GB (e.g. 70+ leftover dirs ≈ 570 GB). This
+standalone script detects, prints (path / name / size + total), and can
+recursively delete them — independently of the run `_cache` management.
+
+```bash
+# List all detected staging caches under /tmp
+python scripts/clean_tmp_caches.py
+
+# List from a custom directory
+python scripts/clean_tmp_caches.py --root /tmp
+
+# Preview deletion (nothing removed)
+python scripts/clean_tmp_caches.py --delete --dry-run
+
+# Actually delete them (directories removed recursively)
+python scripts/clean_tmp_caches.py --delete
+```
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--root` | Directory to scan for staging caches | `/tmp` |
+| `--delete` | Actually delete the staging caches (default: list only) | off |
+| `--dry-run` | With `--delete`, show what would be deleted without deleting | off |
+
 
 
