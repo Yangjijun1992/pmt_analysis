@@ -530,23 +530,28 @@ tells you to re-run with `--sudo`.
 
 ```bash
 # List all run _cache files under the data root
-python scripts/manage_caches.py
+python3 scripts/manage_caches.py
 
 # List cache files for a single run
-python scripts/manage_caches.py --run-id 00385
+python3 scripts/manage_caches.py --run-id 00385
 
 # Preview what would be deleted (no actual deletion)
-python scripts/manage_caches.py --run-id 00385 --delete --dry-run
+python3 scripts/manage_caches.py --run-id 00385 --delete --dry-run
 
 # Actually delete cache files for a run (as the file owner)
-python scripts/manage_caches.py --run-id 00385 --delete
+python3 scripts/manage_caches.py --run-id 00385 --delete
 
 # Delete via sudo (when not the file owner, e.g. under the daq user)
-python scripts/manage_caches.py --delete --sudo
+sudo python3 scripts/manage_caches.py --delete --sudo
+sudo python3 scripts/manage_caches.py --run-id 00385 --delete --sudo
 
 # Delete all run caches under the data root and remove empty cache dirs
-python scripts/manage_caches.py --delete --purge-empty-dirs
+python3 scripts/manage_caches.py --delete --purge-empty-dirs
 ```
+
+Use `sudo python3 ... --delete --sudo` to also delete caches owned by other
+users. Use `sudo` only for deletion — for listing (no `--delete`) plain
+`python3` is enough.
 
 | Flag | Description | Default |
 |------|-------------|---------|
@@ -576,20 +581,25 @@ has sudo) and pass `--sudo`; a permission error otherwise prints the owner.
 
 ```bash
 # List all detected staging caches under /tmp
-python scripts/clean_tmp_caches.py
+python3 scripts/clean_tmp_caches.py
 
 # List from a custom directory
-python scripts/clean_tmp_caches.py --root /tmp
+python3 scripts/clean_tmp_caches.py --root /tmp
 
 # Preview deletion (nothing removed)
-python scripts/clean_tmp_caches.py --delete --dry-run
+python3 scripts/clean_tmp_caches.py --delete --dry-run
 
 # Actually delete them (as the owner)
-python scripts/clean_tmp_caches.py --delete
+python3 scripts/clean_tmp_caches.py --delete
 
 # Delete via sudo (under the daq user; removes root/other-user caches)
-python scripts/clean_tmp_caches.py --delete --sudo
+sudo python3 scripts/clean_tmp_caches.py --delete --sudo
 ```
+
+> **Note:** `clean_tmp_caches.py` operates on `/tmp` globally and has **no**
+> `--run-id` argument. To work on a specific run's `_cache`, use
+> `manage_caches.py --run-id <id>` instead. Using `sudo` is only needed for
+> the actual deletion; plain `python3` is enough for listing.
 
 | Flag | Description | Default |
 |------|-------------|---------|
